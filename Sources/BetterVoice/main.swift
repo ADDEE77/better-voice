@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import AVFoundation
 import CoreGraphics
 import BetterVoiceCore
@@ -7,79 +8,111 @@ import Speech
 private enum BetterVoiceError: LocalizedError {
     case microphoneUnavailable
     case speechUnavailable
+    case sessionUnavailable
     case screenshotUnavailable
 
     var errorDescription: String? {
         switch self {
         case .microphoneUnavailable: return "No microphone input is available."
         case .speechUnavailable: return "Speech recognition is unavailable."
+        case .sessionUnavailable: return "The recording session is no longer available."
         case .screenshotUnavailable: return "The screen could not be captured. Enable Screen Recording for BetterVoice."
         }
     }
 }
 
+@MainActor
 private final class SpeechRecorder: NSObject {
     private let recognizer = SFSpeechRecognizer(locale: Locale.current)
     private let audioEngine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private var latestTranscript = ""
-    private var finishing: ((String) -> Void)?
+    private var activeID: UUID?
+    private var pendingFinish: (id: UUID, completion: (String) -> Void)?
+    private let finalizationTimeout: TimeInterval = 3
 
     var onTranscript: ((String) -> Void)?
 
     func start() throws {
+        precondition(activeID == nil && pendingFinish == nil)
         guard let recognizer, recognizer.isAvailable else { throw BetterVoiceError.speechUnavailable }
         guard audioEngine.inputNode.inputFormat(forBus: 0).channelCount > 0 else {
             throw BetterVoiceError.microphoneUnavailable
         }
 
+        let id = UUID()
+        activeID = id
         latestTranscript = ""
-        request = SFSpeechAudioBufferRecognitionRequest()
-        guard let request else { throw BetterVoiceError.speechUnavailable }
-        request.shouldReportPartialResults = true
+        let audioRequest = SFSpeechAudioBufferRecognitionRequest()
+        request = audioRequest
+        audioRequest.shouldReportPartialResults = true
 
-        recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            guard let self else { return }
-            if let result {
-                self.latestTranscript = result.bestTranscription.formattedString
-                self.onTranscript?(self.latestTranscript)
-                if result.isFinal { self.finishIfNeeded() }
-            } else if error != nil {
-                self.finishIfNeeded()
+        recognitionTask = recognizer.recognitionTask(with: audioRequest) { [weak self] result, error in
+            DispatchQueue.main.async {
+                self?.handle(result: result, error: error, id: id)
             }
         }
 
         let inputNode = audioEngine.inputNode
-        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputNode.inputFormat(forBus: 0)) { [weak self] buffer, _ in
-            self?.request?.append(buffer)
+        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputNode.inputFormat(forBus: 0)) { buffer, _ in
+            audioRequest.append(buffer)
         }
-        audioEngine.prepare()
-        try audioEngine.start()
+        do {
+            audioEngine.prepare()
+            try audioEngine.start()
+        } catch {
+            inputNode.removeTap(onBus: 0)
+            audioEngine.stop()
+            recognitionTask?.cancel()
+            recognitionTask = nil
+            self.request = nil
+            activeID = nil
+            throw error
+        }
     }
 
     func stop(completion: @escaping (String) -> Void) {
-        finishing = completion
+        guard let id = activeID else {
+            completion(latestTranscript)
+            return
+        }
+        pendingFinish = (id, completion)
         request?.endAudio()
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
         recognitionTask?.finish()
 
-        // Speech can emit its final result asynchronously; this keeps stop deterministic.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-            self?.finishIfNeeded()
+        // Speech can lag after endAudio; preserve the latest partial after this upper bound.
+        DispatchQueue.main.asyncAfter(deadline: .now() + finalizationTimeout) { [weak self] in
+            self?.finishIfNeeded(id: id)
         }
     }
 
-    private func finishIfNeeded() {
-        guard let finishing else { return }
-        self.finishing = nil
+    private func handle(result: SFSpeechRecognitionResult?, error: Error?, id: UUID) {
+        guard activeID == id else { return }
+        if let result {
+            latestTranscript = result.bestTranscription.formattedString
+            onTranscript?(latestTranscript)
+            if result.isFinal { finishIfNeeded(id: id) }
+        } else if error != nil {
+            finishIfNeeded(id: id)
+        }
+    }
+
+    private func finishIfNeeded(id: UUID) {
+        guard activeID == id, let pendingFinish, pendingFinish.id == id else { return }
+        self.pendingFinish = nil
+        activeID = nil
+        recognitionTask?.cancel()
         recognitionTask = nil
         request = nil
-        finishing(latestTranscript)
+        onTranscript = nil
+        pendingFinish.completion(latestTranscript)
     }
 }
 
+@MainActor
 private final class ScreenshotCapture {
     static func capture(gesture: CircleGesture, to url: URL) throws {
         let side = max(180, min(720, gesture.radius * 3.2))
@@ -141,6 +174,7 @@ private final class ScreenshotCapture {
     }
 }
 
+@MainActor
 private final class SessionOutput {
     let folder: URL
     private(set) var images: [URL] = []
@@ -150,7 +184,7 @@ private final class SessionOutput {
             ?? FileManager.default.temporaryDirectory
         let root = desktop.appendingPathComponent("BetterVoice", isDirectory: true)
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        folder = root.appendingPathComponent(stamp, isDirectory: true)
+        folder = root.appendingPathComponent("\(stamp)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     }
 
@@ -161,7 +195,7 @@ private final class SessionOutput {
         return url
     }
 
-    func finish(transcript: String) throws -> URL {
+    func finish(transcript: String) throws -> (markdownURL: URL, clipboardCopied: Bool) {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         let text = trimmed.isEmpty ? "(No transcript captured.)" : trimmed
         var markdown = "# BetterVoice session\n\n\(text)\n"
@@ -175,14 +209,15 @@ private final class SessionOutput {
         try markdown.write(to: markdownURL, atomically: true, encoding: .utf8)
         let paths = images.enumerated().map { "Context \($0.offset + 1): \($0.element.path)" }.joined(separator: "\n")
         let clipboardText = images.isEmpty ? text : "\(text)\n\nScreen context:\n\(paths)"
-        Clipboard.copy(transcript: text, images: images, text: clipboardText)
+        let clipboardCopied = Clipboard.copy(transcript: text, images: images, text: clipboardText)
         print(clipboardText)
-        return markdownURL
+        return (markdownURL, clipboardCopied)
     }
 }
 
+@MainActor
 private enum Clipboard {
-    static func copy(transcript: String, images: [URL], text: String) {
+    static func copy(transcript: String, images: [URL], text: String) -> Bool {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
 
@@ -203,11 +238,12 @@ private enum Clipboard {
         ) {
             item.setData(rtf, forType: .rtf)
         }
-        item.setString(text, forType: .string)
-        pasteboard.writeObjects([item])
+        guard item.setString(text, forType: .string) else { return false }
+        return pasteboard.writeObjects([item])
     }
 }
 
+@MainActor
 private final class InputMonitor {
     private var globalKeyMonitor: Any?
     private var localKeyMonitor: Any?
@@ -224,22 +260,24 @@ private final class InputMonitor {
     func start() {
         let keyHandler: (NSEvent) -> Void = { [weak self] event in
             guard let self, Self.isTrigger(event) else { return }
-            self.toggle()
+            DispatchQueue.main.async { self.toggle() }
         }
         globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: keyHandler)
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, Self.isTrigger(event) else { return event }
-            self.toggle()
+            DispatchQueue.main.async { self.toggle() }
             return nil
         }
 
         let mouseHandler: (NSEvent) -> Void = { [weak self] event in
             guard let location = event.cgEvent?.location else { return }
-            self?.mouseMoved(location)
+            DispatchQueue.main.async { self?.mouseMoved(location) }
         }
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved, handler: mouseHandler)
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
-            if let location = event.cgEvent?.location { self?.mouseMoved(location) }
+            if let location = event.cgEvent?.location {
+                DispatchQueue.main.async { self?.mouseMoved(location) }
+            }
             return event
         }
     }
@@ -252,10 +290,17 @@ private final class InputMonitor {
     }
 
     private static func isTrigger(_ event: NSEvent) -> Bool {
-        event.type == .keyDown && event.keyCode == 49 && event.modifierFlags.contains(.option)
+        event.type == .keyDown && !event.isARepeat && event.keyCode == 49 && event.modifierFlags.contains(.option)
     }
 }
 
+private enum SessionState {
+    case idle
+    case recording
+    case finishing
+}
+
+@MainActor
 private final class AppController: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let speech = SpeechRecorder()
@@ -263,7 +308,7 @@ private final class AppController: NSObject, NSApplicationDelegate {
     private var detector = CircleGestureDetector()
     private var output: SessionOutput?
     private var transcript = ""
-    private var isRecording = false
+    private var state = SessionState.idle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem.button?.title = "BetterVoice"
@@ -284,10 +329,18 @@ private final class AppController: NSObject, NSApplicationDelegate {
         inputMonitor?.start()
         requestSpeechAuthorization()
         requestMicrophoneAuthorization()
+        requestSystemPermissions()
     }
 
     @objc private func toggleRecording() {
-        isRecording ? stopRecording() : startRecording()
+        switch state {
+        case .idle:
+            startRecording()
+        case .recording:
+            stopRecording()
+        case .finishing:
+            break
+        }
     }
 
     private func startRecording() {
@@ -300,9 +353,9 @@ private final class AppController: NSObject, NSApplicationDelegate {
                 self?.statusItem.button?.title = "Recording…"
             }
             try speech.start()
-            isRecording = true
+            state = .recording
             statusItem.button?.title = "Recording…"
-            updateMenuTitle("Stop recording (⌥ Space)")
+            updateMenuTitle("Stop recording (⌥ Space)", enabled: true)
         } catch {
             output = nil
             showError(error.localizedDescription)
@@ -310,27 +363,37 @@ private final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func stopRecording() {
-        isRecording = false
+        guard state == .recording else { return }
+        state = .finishing
         statusItem.button?.title = "Finishing…"
-        updateMenuTitle("Start recording (⌥ Space)")
+        updateMenuTitle("Finishing… (⌥ Space)", enabled: false)
         speech.stop { [weak self] finalTranscript in
             guard let self else { return }
             self.transcript = finalTranscript.isEmpty ? self.transcript : finalTranscript
             do {
-                let markdownURL = try self.output?.finish(transcript: self.transcript)
+                guard let output = self.output else { throw BetterVoiceError.sessionUnavailable }
+                let result = try output.finish(transcript: self.transcript)
                 self.output = nil
+                self.state = .idle
                 self.statusItem.button?.title = "BetterVoice"
-                if let markdownURL { self.showNotice("Copied transcript + context\n\(markdownURL.path)") }
+                self.updateMenuTitle("Start recording (⌥ Space)", enabled: true)
+                if result.clipboardCopied {
+                    self.showNotice("Copied transcript + context\n\(result.markdownURL.path)")
+                } else {
+                    self.showError("Saved session, but clipboard copy failed.\n\(result.markdownURL.path)")
+                }
             } catch {
                 self.output = nil
+                self.state = .idle
                 self.statusItem.button?.title = "BetterVoice"
+                self.updateMenuTitle("Start recording (⌥ Space)", enabled: true)
                 self.showError(error.localizedDescription)
             }
         }
     }
 
     private func handleMouse(_ point: CGPoint) {
-        guard isRecording, let gesture = detector.add(point: point, at: ProcessInfo.processInfo.systemUptime) else { return }
+        guard state == .recording, let gesture = detector.add(point: point, at: ProcessInfo.processInfo.systemUptime) else { return }
         do {
             guard let output else { return }
             _ = try output.addImage(for: gesture)
@@ -349,20 +412,32 @@ private final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func requestMicrophoneAuthorization() {
-        let handle: (Bool) -> Void = { granted in
-            if !granted {
-                DispatchQueue.main.async { self.showError("Allow Microphone access in System Settings to record speech.") }
-            }
-        }
         if #available(macOS 14.0, *) {
-            AVAudioApplication.requestRecordPermission(completionHandler: handle)
+            AVAudioApplication.requestRecordPermission { [weak self] granted in
+                guard !granted else { return }
+                DispatchQueue.main.async { self?.showError("Allow Microphone access in System Settings to record speech.") }
+            }
         } else {
-            AVCaptureDevice.requestAccess(for: .audio, completionHandler: handle)
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                guard !granted else { return }
+                DispatchQueue.main.async { self?.showError("Allow Microphone access in System Settings to record speech.") }
+            }
         }
     }
 
-    private func updateMenuTitle(_ title: String) {
+    private func requestSystemPermissions() {
+        if !CGPreflightScreenCaptureAccess() {
+            _ = CGRequestScreenCaptureAccess()
+        }
+
+        let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        let options = [promptKey: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+    }
+
+    private func updateMenuTitle(_ title: String, enabled: Bool) {
         statusItem.menu?.item(at: 0)?.title = title
+        statusItem.menu?.item(at: 0)?.isEnabled = enabled
     }
 
     private func showNotice(_ message: String) {
@@ -384,7 +459,7 @@ private final class AppController: NSObject, NSApplicationDelegate {
 }
 
 let application = NSApplication.shared
-private let delegate = AppController()
+private let delegate = MainActor.assumeIsolated { AppController() }
 application.delegate = delegate
 application.setActivationPolicy(.accessory)
 application.run()
