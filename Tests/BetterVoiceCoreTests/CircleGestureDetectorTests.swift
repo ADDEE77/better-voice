@@ -3,6 +3,12 @@ import XCTest
 @testable import BetterVoiceCore
 
 final class CircleGestureDetectorTests: XCTestCase {
+    func testTrailSegmentRangeHandlesEmptyAndShortTrails() {
+        XCTAssertEqual(Array(trailSegmentRange(pointCount: 0)), [])
+        XCTAssertEqual(Array(trailSegmentRange(pointCount: 1)), [])
+        XCTAssertEqual(Array(trailSegmentRange(pointCount: 3)), [1, 2])
+    }
+
     func testRecognizesClosedCircle() {
         var detector = CircleGestureDetector()
         var result: CircleGesture?

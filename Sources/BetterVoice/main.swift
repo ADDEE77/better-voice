@@ -227,7 +227,7 @@ private final class TrailOverlayView: NSView {
         let now = ProcessInfo.processInfo.systemUptime
 
         context.setLineCap(.round)
-        for index in 1..<trail.count {
+        for index in trailSegmentRange(pointCount: trail.count) {
             let previous = trail[index - 1]
             let current = trail[index]
             let age = max(0, now - current.time)
@@ -278,11 +278,9 @@ private final class TrailOverlayController {
     private let view = TrailOverlayView(frame: .zero)
     private var window: TrailOverlayWindow?
     private var timer: Timer?
-    private var detector = CircleGestureDetector()
 
     func start() {
         stop()
-        detector.reset()
         view.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
         let frames = NSScreen.screens.map(\.frame)
@@ -321,7 +319,6 @@ private final class TrailOverlayController {
     func stop() {
         timer?.invalidate()
         timer = nil
-        detector.reset()
         view.reset()
         window?.orderOut(nil)
         window = nil
@@ -330,9 +327,11 @@ private final class TrailOverlayController {
     func add(point: CGPoint, at time: TimeInterval) {
         guard window != nil else { return }
         view.add(point: point, at: time)
-        if let gesture = detector.add(point: point, at: time) {
-            view.confirm(center: gesture.center, radius: gesture.radius, at: time)
-        }
+    }
+
+    func confirm(center: CGPoint, radius: CGFloat, at time: TimeInterval) {
+        guard window != nil else { return }
+        view.confirm(center: center, radius: radius, at: time)
     }
 
     private func tick() {
@@ -422,9 +421,9 @@ private final class InputMonitor {
     private var localMouseMonitor: Any?
     private var chordLatched = false
     private let toggle: () -> Void
-    private let mouseMoved: (CGPoint, CGPoint) -> Void
+    private let mouseMoved: (CGPoint) -> Void
 
-    init(toggle: @escaping () -> Void, mouseMoved: @escaping (CGPoint, CGPoint) -> Void) {
+    init(toggle: @escaping () -> Void, mouseMoved: @escaping (CGPoint) -> Void) {
         self.toggle = toggle
         self.mouseMoved = mouseMoved
     }
@@ -442,14 +441,12 @@ private final class InputMonitor {
 
         let mouseHandler: (NSEvent) -> Void = { [weak self] event in
             guard let location = event.cgEvent?.location else { return }
-            let appKitLocation = NSEvent.mouseLocation
-            DispatchQueue.main.async { self?.mouseMoved(location, appKitLocation) }
+            DispatchQueue.main.async { self?.mouseMoved(location) }
         }
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved, handler: mouseHandler)
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
             if let location = event.cgEvent?.location {
-                let appKitLocation = NSEvent.mouseLocation
-                DispatchQueue.main.async { self?.mouseMoved(location, appKitLocation) }
+                DispatchQueue.main.async { self?.mouseMoved(location) }
             }
             return event
         }
@@ -534,8 +531,8 @@ private final class AppController: NSObject, NSApplicationDelegate {
 
         inputMonitor = InputMonitor(
             toggle: { [weak self] in self?.toggleRecording() },
-            mouseMoved: { [weak self] quartzPoint, appKitPoint in
-                self?.handleMouse(quartzPoint: quartzPoint, appKitPoint: appKitPoint)
+            mouseMoved: { [weak self] quartzPoint in
+                self?.handleMouse(quartzPoint: quartzPoint)
             }
         )
         inputMonitor?.start()
@@ -607,11 +604,14 @@ private final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func handleMouse(quartzPoint: CGPoint, appKitPoint: CGPoint) {
+    private func handleMouse(quartzPoint: CGPoint) {
         guard state == .recording else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        trailOverlay.add(point: appKitPoint, at: now)
+        let overlayPoint = appKitPoint(from: quartzPoint)
+        trailOverlay.add(point: overlayPoint, at: now)
         guard let gesture = detector.add(point: quartzPoint, at: now) else { return }
+        let appKitCenter = appKitPoint(from: gesture.center)
+        trailOverlay.confirm(center: appKitCenter, radius: gesture.radius, at: now)
         do {
             guard let output else { return }
             _ = try output.addImage(for: gesture)
@@ -619,6 +619,14 @@ private final class AppController: NSObject, NSApplicationDelegate {
         } catch {
             showError(error.localizedDescription)
         }
+    }
+
+    private func appKitPoint(from quartzPoint: CGPoint) -> CGPoint {
+        guard let primaryFrame = NSScreen.screens.first?.frame else { return quartzPoint }
+        return CGPoint(
+            x: quartzPoint.x + primaryFrame.minX,
+            y: primaryFrame.maxY - quartzPoint.y
+        )
     }
 
     private func requestSpeechAuthorization() {
