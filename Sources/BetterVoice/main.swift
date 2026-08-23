@@ -176,6 +176,170 @@ private final class ScreenshotCapture {
     }
 }
 
+private struct TrailPoint {
+    let point: CGPoint
+    let time: TimeInterval
+}
+
+private struct TrailConfirmation {
+    let center: CGPoint
+    let radius: CGFloat
+    let startedAt: TimeInterval
+}
+
+@MainActor
+private final class TrailOverlayView: NSView {
+    private let trailLifetime: TimeInterval = 0.8
+    private let confirmationLifetime: TimeInterval = 0.55
+    private var trail: [TrailPoint] = []
+    private var confirmations: [TrailConfirmation] = []
+    private var globalOrigin = CGPoint.zero
+    var reduceMotion = false
+
+    func setGlobalOrigin(_ origin: CGPoint) {
+        globalOrigin = origin
+    }
+
+    func add(point: CGPoint, at time: TimeInterval) {
+        trail.append(TrailPoint(point: point, time: time))
+        prune(now: time)
+        needsDisplay = true
+    }
+
+    func confirm(center: CGPoint, radius: CGFloat, at time: TimeInterval) {
+        confirmations.append(TrailConfirmation(center: center, radius: radius, startedAt: time))
+        needsDisplay = true
+    }
+
+    func tick(now: TimeInterval) {
+        prune(now: now)
+        needsDisplay = true
+    }
+
+    func reset() {
+        trail.removeAll(keepingCapacity: true)
+        confirmations.removeAll(keepingCapacity: true)
+        needsDisplay = false
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+
+        context.setLineCap(.round)
+        for index in 1..<trail.count {
+            let previous = trail[index - 1]
+            let current = trail[index]
+            let age = max(0, now - current.time)
+            let alpha = max(0, 0.62 * (1 - age / trailLifetime))
+            guard alpha > 0 else { continue }
+            context.setStrokeColor(NSColor.systemBlue.withAlphaComponent(alpha).cgColor)
+            context.setLineWidth(3)
+            context.move(to: localPoint(previous.point))
+            context.addLine(to: localPoint(current.point))
+            context.strokePath()
+        }
+
+        for confirmation in confirmations {
+            let age = max(0, now - confirmation.startedAt)
+            let progress = min(1, age / confirmationLifetime)
+            let alpha = max(0, 0.82 * (1 - progress))
+            guard alpha > 0 else { continue }
+            let scale = reduceMotion ? 1 : 0.82 + 0.18 * progress
+            let radius = confirmation.radius * scale
+            let center = localPoint(confirmation.center)
+            let rect = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+            context.setFillColor(NSColor.systemBlue.withAlphaComponent(alpha * 0.12).cgColor)
+            context.fillEllipse(in: rect)
+            context.setStrokeColor(NSColor.systemBlue.withAlphaComponent(alpha).cgColor)
+            context.setLineWidth(4)
+            context.strokeEllipse(in: rect)
+        }
+    }
+
+    private func localPoint(_ point: CGPoint) -> CGPoint {
+        CGPoint(x: point.x - globalOrigin.x, y: point.y - globalOrigin.y)
+    }
+
+    private func prune(now: TimeInterval) {
+        trail.removeAll { now - $0.time > trailLifetime }
+        confirmations.removeAll { now - $0.startedAt > confirmationLifetime }
+    }
+}
+
+@MainActor
+private final class TrailOverlayWindow: NSWindow {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+@MainActor
+private final class TrailOverlayController {
+    private let view = TrailOverlayView(frame: .zero)
+    private var window: TrailOverlayWindow?
+    private var timer: Timer?
+    private var detector = CircleGestureDetector()
+
+    func start() {
+        stop()
+        detector.reset()
+        view.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+
+        let frames = NSScreen.screens.map(\.frame)
+        guard var frame = frames.first else { return }
+        for screenFrame in frames.dropFirst() {
+            frame = frame.union(screenFrame)
+        }
+
+        let overlay = TrailOverlayWindow(
+            contentRect: frame,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        overlay.isOpaque = false
+        overlay.backgroundColor = .clear
+        overlay.hasShadow = false
+        overlay.ignoresMouseEvents = true
+        overlay.level = .screenSaver
+        overlay.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        overlay.sharingType = .none
+        overlay.animationBehavior = .none
+        view.setGlobalOrigin(frame.origin)
+        view.frame = CGRect(origin: .zero, size: frame.size)
+        overlay.contentView = view
+        window = overlay
+        overlay.orderFrontRegardless()
+
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in self?.tick() }
+        }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        detector.reset()
+        view.reset()
+        window?.orderOut(nil)
+        window = nil
+    }
+
+    func add(point: CGPoint, at time: TimeInterval) {
+        guard window != nil else { return }
+        view.add(point: point, at: time)
+        if let gesture = detector.add(point: point, at: time) {
+            view.confirm(center: gesture.center, radius: gesture.radius, at: time)
+        }
+    }
+
+    private func tick() {
+        view.tick(now: ProcessInfo.processInfo.systemUptime)
+    }
+}
+
 @MainActor
 private final class SessionOutput {
     let folder: URL
@@ -252,52 +416,66 @@ private enum Clipboard {
 
 @MainActor
 private final class InputMonitor {
-    private var globalKeyMonitor: Any?
-    private var localKeyMonitor: Any?
+    private var globalFlagsMonitor: Any?
+    private var localFlagsMonitor: Any?
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
+    private var chordLatched = false
     private let toggle: () -> Void
-    private let mouseMoved: (CGPoint) -> Void
+    private let mouseMoved: (CGPoint, CGPoint) -> Void
 
-    init(toggle: @escaping () -> Void, mouseMoved: @escaping (CGPoint) -> Void) {
+    init(toggle: @escaping () -> Void, mouseMoved: @escaping (CGPoint, CGPoint) -> Void) {
         self.toggle = toggle
         self.mouseMoved = mouseMoved
     }
 
     func start() {
-        let keyHandler: (NSEvent) -> Void = { [weak self] event in
-            guard let self, Self.isTrigger(event) else { return }
-            DispatchQueue.main.async { self.toggle() }
+        chordLatched = false
+        let flagsHandler: (NSEvent) -> Void = { [weak self] event in
+            DispatchQueue.main.async { self?.handleFlags(event.modifierFlags) }
         }
-        globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: keyHandler)
-        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, Self.isTrigger(event) else { return event }
-            DispatchQueue.main.async { self.toggle() }
-            return nil
+        globalFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged, handler: flagsHandler)
+        localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            DispatchQueue.main.async { self?.handleFlags(event.modifierFlags) }
+            return event
         }
 
         let mouseHandler: (NSEvent) -> Void = { [weak self] event in
             guard let location = event.cgEvent?.location else { return }
-            DispatchQueue.main.async { self?.mouseMoved(location) }
+            let appKitLocation = NSEvent.mouseLocation
+            DispatchQueue.main.async { self?.mouseMoved(location, appKitLocation) }
         }
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved, handler: mouseHandler)
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
             if let location = event.cgEvent?.location {
-                DispatchQueue.main.async { self?.mouseMoved(location) }
+                let appKitLocation = NSEvent.mouseLocation
+                DispatchQueue.main.async { self?.mouseMoved(location, appKitLocation) }
             }
             return event
         }
     }
 
-    deinit {
-        if let monitor = globalKeyMonitor { NSEvent.removeMonitor(monitor) }
-        if let monitor = localKeyMonitor { NSEvent.removeMonitor(monitor) }
+    func stop() {
+        if let monitor = globalFlagsMonitor { NSEvent.removeMonitor(monitor) }
+        if let monitor = localFlagsMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = globalMouseMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = localMouseMonitor { NSEvent.removeMonitor(monitor) }
+        globalFlagsMonitor = nil
+        localFlagsMonitor = nil
+        globalMouseMonitor = nil
+        localMouseMonitor = nil
     }
 
-    private static func isTrigger(_ event: NSEvent) -> Bool {
-        event.type == .keyDown && !event.isARepeat && event.keyCode == 49 && event.modifierFlags.contains(.option)
+    private func handleFlags(_ flags: NSEvent.ModifierFlags) {
+        let normalized = flags.intersection(.deviceIndependentFlagsMask)
+        let chordHeld = normalized.contains(.command) && normalized.contains(.option)
+        if chordHeld {
+            guard !chordLatched else { return }
+            chordLatched = true
+            toggle()
+        } else {
+            chordLatched = false
+        }
     }
 }
 
@@ -307,21 +485,46 @@ private enum SessionState {
     case finishing
 }
 
+private enum StatusIconState {
+    case idle
+    case recording
+    case finishing
+}
+
 @MainActor
 private final class AppController: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let speech = SpeechRecorder()
+    private let trailOverlay = TrailOverlayController()
     private var inputMonitor: InputMonitor?
     private var detector = CircleGestureDetector()
     private var output: SessionOutput?
     private var transcript = ""
     private var state = SessionState.idle
+    private var statusMenuItem: NSMenuItem?
+    private var recordingMenuItem: NSMenuItem?
+    private var statusAnimationTimer: Timer?
+    private var statusFeedbackTimer: Timer?
+    private var statusPulse = false
+    private var reduceMotion = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItem.button?.title = "BetterVoice"
+        reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        setStatusIcon(.idle)
+        statusItem.button?.imagePosition = .imageOnly
+        statusItem.button?.imageScaling = .scaleProportionallyDown
+        statusItem.button?.toolTip = "BetterVoice — hold ⌘⌥ to record"
+
         let menu = NSMenu()
-        let recordingItem = NSMenuItem(title: "Start recording (⌥ Space)", action: #selector(toggleRecording), keyEquivalent: "")
+        let statusMenuItem = NSMenuItem(title: "Ready • hold ⌘⌥ to record", action: nil, keyEquivalent: "")
+        statusMenuItem.isEnabled = false
+        self.statusMenuItem = statusMenuItem
+        menu.addItem(statusMenuItem)
+        menu.addItem(NSMenuItem.separator())
+
+        let recordingItem = NSMenuItem(title: "Start recording (⌘⌥)", action: #selector(toggleRecording), keyEquivalent: "")
         recordingItem.target = self
+        recordingMenuItem = recordingItem
         menu.addItem(recordingItem)
         menu.addItem(NSMenuItem.separator())
         let quitItem = NSMenuItem(title: "Quit BetterVoice", action: #selector(quit), keyEquivalent: "q")
@@ -331,7 +534,9 @@ private final class AppController: NSObject, NSApplicationDelegate {
 
         inputMonitor = InputMonitor(
             toggle: { [weak self] in self?.toggleRecording() },
-            mouseMoved: { [weak self] point in self?.handleMouse(point) }
+            mouseMoved: { [weak self] quartzPoint, appKitPoint in
+                self?.handleMouse(quartzPoint: quartzPoint, appKitPoint: appKitPoint)
+            }
         )
         inputMonitor?.start()
         requestSpeechAuthorization()
@@ -357,12 +562,13 @@ private final class AppController: NSObject, NSApplicationDelegate {
             transcript = ""
             speech.onTranscript = { [weak self] value in
                 self?.transcript = value
-                self?.statusItem.button?.title = "Recording…"
             }
             try speech.start()
             state = .recording
-            statusItem.button?.title = "Recording…"
-            updateMenuTitle("Stop recording (⌥ Space)", enabled: true)
+            trailOverlay.start()
+            setStatusIcon(.recording)
+            showStatus("Recording…")
+            updateMenuTitle("Stop recording (⌘⌥)", enabled: true)
         } catch {
             output = nil
             showError(error.localizedDescription)
@@ -372,8 +578,10 @@ private final class AppController: NSObject, NSApplicationDelegate {
     private func stopRecording() {
         guard state == .recording else { return }
         state = .finishing
-        statusItem.button?.title = "Finishing…"
-        updateMenuTitle("Finishing… (⌥ Space)", enabled: false)
+        trailOverlay.stop()
+        setStatusIcon(.finishing)
+        showStatus("Finishing…")
+        updateMenuTitle("Finishing… (⌘⌥)", enabled: false)
         speech.stop { [weak self] finalTranscript in
             guard let self else { return }
             self.transcript = finalTranscript.isEmpty ? self.transcript : finalTranscript
@@ -382,29 +590,32 @@ private final class AppController: NSObject, NSApplicationDelegate {
                 let result = try output.finish(transcript: self.transcript)
                 self.output = nil
                 self.state = .idle
-                self.statusItem.button?.title = "BetterVoice"
-                self.updateMenuTitle("Start recording (⌥ Space)", enabled: true)
+                self.setStatusIcon(.idle)
+                self.updateMenuTitle("Start recording (⌘⌥)", enabled: true)
                 if result.clipboardCopied {
-                    self.showNotice("Copied transcript + context\n\(result.markdownURL.path)")
+                    self.showStatus("Copied transcript + context", resetAfter: 4)
                 } else {
-                    self.showError("Saved session, but clipboard copy failed.\n\(result.markdownURL.path)")
+                    self.showError("Saved session; plain-text clipboard fallback used.")
                 }
             } catch {
                 self.output = nil
                 self.state = .idle
-                self.statusItem.button?.title = "BetterVoice"
-                self.updateMenuTitle("Start recording (⌥ Space)", enabled: true)
+                self.setStatusIcon(.idle)
+                self.updateMenuTitle("Start recording (⌘⌥)", enabled: true)
                 self.showError(error.localizedDescription)
             }
         }
     }
 
-    private func handleMouse(_ point: CGPoint) {
-        guard state == .recording, let gesture = detector.add(point: point, at: ProcessInfo.processInfo.systemUptime) else { return }
+    private func handleMouse(quartzPoint: CGPoint, appKitPoint: CGPoint) {
+        guard state == .recording else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        trailOverlay.add(point: appKitPoint, at: now)
+        guard let gesture = detector.add(point: quartzPoint, at: now) else { return }
         do {
             guard let output else { return }
             _ = try output.addImage(for: gesture)
-            statusItem.button?.title = "Recording • \(output.images.count)"
+            showStatus("Recording • \(output.images.count) screen context")
         } catch {
             showError(error.localizedDescription)
         }
@@ -420,14 +631,20 @@ private final class AppController: NSObject, NSApplicationDelegate {
 
     private func requestMicrophoneAuthorization() {
         if #available(macOS 14.0, *) {
-            AVAudioApplication.requestRecordPermission { [weak self] granted in
+            let controller = self
+            AVAudioApplication.requestRecordPermission { granted in
                 guard !granted else { return }
-                DispatchQueue.main.async { self?.showError("Allow Microphone access in System Settings to record speech.") }
+                DispatchQueue.main.async { [weak controller] in
+                    controller?.showError("Allow Microphone access in System Settings to record speech.")
+                }
             }
         } else {
-            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+            let controller = self
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
                 guard !granted else { return }
-                DispatchQueue.main.async { self?.showError("Allow Microphone access in System Settings to record speech.") }
+                DispatchQueue.main.async { [weak controller] in
+                    controller?.showError("Allow Microphone access in System Settings to record speech.")
+                }
             }
         }
     }
@@ -437,30 +654,71 @@ private final class AppController: NSObject, NSApplicationDelegate {
             _ = CGRequestScreenCaptureAccess()
         }
 
-        let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        let options = [promptKey: true] as CFDictionary
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
     }
 
     private func updateMenuTitle(_ title: String, enabled: Bool) {
-        statusItem.menu?.item(at: 0)?.title = title
-        statusItem.menu?.item(at: 0)?.isEnabled = enabled
+        recordingMenuItem?.title = title
+        recordingMenuItem?.isEnabled = enabled
     }
 
-    private func showNotice(_ message: String) {
-        let alert = NSAlert()
-        alert.messageText = "BetterVoice"
-        alert.informativeText = message
-        alert.alertStyle = .informational
-        alert.runModal()
+    private func showStatus(_ message: String, resetAfter: TimeInterval? = nil) {
+        statusFeedbackTimer?.invalidate()
+        statusFeedbackTimer = nil
+        statusMenuItem?.title = message
+        statusItem.button?.toolTip = "BetterVoice — \(message)"
+
+        guard let resetAfter else { return }
+        let timer = Timer(timeInterval: resetAfter, repeats: false) { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.state == .idle else { return }
+                self.showStatus("Ready • hold ⌘⌥ to record")
+            }
+        }
+        statusFeedbackTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func setStatusIcon(_ state: StatusIconState) {
+        statusAnimationTimer?.invalidate()
+        statusAnimationTimer = nil
+
+        switch state {
+        case .idle, .finishing:
+            setIcon(named: "waveform")
+        case .recording:
+            statusPulse = false
+            setIcon(named: "waveform.circle.fill")
+            guard !reduceMotion else { return }
+            let timer = Timer(timeInterval: 0.45, repeats: true) { [weak self] _ in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.state == .recording else { return }
+                    self.statusPulse.toggle()
+                    self.setIcon(named: self.statusPulse ? "waveform.circle" : "waveform.circle.fill")
+                }
+            }
+            statusAnimationTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+
+    private func setIcon(named name: String) {
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: "BetterVoice")
+        image?.isTemplate = true
+        statusItem.button?.image = image
     }
 
     private func showError(_ message: String) {
         NSSound.beep()
-        showNotice(message)
+        showStatus("Error: \(message)", resetAfter: 6)
     }
 
     @objc private func quit() {
+        inputMonitor?.stop()
+        trailOverlay.stop()
+        statusAnimationTimer?.invalidate()
+        statusFeedbackTimer?.invalidate()
         NSApplication.shared.terminate(nil)
     }
 }
