@@ -1,0 +1,269 @@
+import AppKit
+import SwiftUI
+
+@MainActor
+final class SetupModel: ObservableObject {
+    @Published var microphoneGranted = false
+    @Published var screenGranted = false
+    @Published var accessibilityGranted = false
+    @Published var microphoneName = "Checking…"
+    @Published var modelStatus = "Checking…"
+    @Published var modelReady = false
+    @Published var modelBusy = false
+
+    var requestMicrophone: () -> Void = {}
+    var requestScreen: () -> Void = {}
+    var requestAccessibility: () -> Void = {}
+    var downloadModel: () -> Void = {}
+    var refresh: () -> Void = {}
+    var complete: () -> Void = {}
+}
+
+struct SetupView: View {
+    @ObservedObject var model: SetupModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            HStack(alignment: .top, spacing: 20) {
+                VStack(alignment: .leading, spacing: 9) {
+                    Label("BetterVoice", systemImage: "waveform.circle.fill")
+                        .font(.system(size: 26, weight: .semibold))
+                    Text("Talk. Point. Give your agent the whole thought.")
+                        .font(.title3)
+                    Text("Speak normally, circle anything important, and BetterVoice keeps the words and full-screen visual context together.")
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 4)
+                CapturePreview()
+                    .frame(width: 250, height: 150)
+            }
+
+            HStack(spacing: 28) {
+                ShortcutGuide(keys: "⌥", title: "Quick note", detail: "Hold to record. Release to finish.")
+                ShortcutGuide(keys: "⌘⌥", title: "Long explanation", detail: "Press once to start, again to finish.")
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Setup")
+                    .font(.headline)
+                SetupRow(
+                    title: "Microphone",
+                    detail: model.microphoneGranted ? model.microphoneName : "Needed to record your voice",
+                    ready: model.microphoneGranted,
+                    action: model.requestMicrophone
+                )
+                SetupRow(
+                    title: "Screen Recording",
+                    detail: model.screenGranted ? "Ready to capture circles" : "Needed only when you circle the screen",
+                    ready: model.screenGranted,
+                    action: model.requestScreen
+                )
+                SetupRow(
+                    title: "Accessibility",
+                    detail: model.accessibilityGranted ? "Shortcuts and transcript insertion are ready" : "Needed for global shortcuts and returning text",
+                    ready: model.accessibilityGranted,
+                    action: model.requestAccessibility
+                )
+                SetupRow(
+                    title: "Local transcription model",
+                    detail: model.modelStatus,
+                    ready: model.modelReady,
+                    busy: model.modelBusy,
+                    action: model.downloadModel
+                )
+            }
+
+            HStack {
+                Text("Sessions stay in Desktop/BetterVoice for up to 7 days, capped at 500 MB.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Refresh") { model.refresh() }
+                Button("Done") { model.complete() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(28)
+        .frame(width: 720)
+        .onAppear { model.refresh() }
+    }
+}
+
+private struct ShortcutGuide: View {
+    let keys: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(keys)
+                .font(.system(size: 22, weight: .medium, design: .rounded))
+                .frame(minWidth: 52)
+                .padding(.vertical, 8)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 9))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).fontWeight(.medium)
+                Text(detail).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SetupRow: View {
+    let title: String
+    let detail: String
+    let ready: Bool
+    var busy = false
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: ready ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(ready ? Color.green : Color.secondary)
+                .font(.title3)
+                .accessibilityLabel(ready ? "Ready" : "Needs setup")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).fontWeight(.medium)
+                Text(detail).font(.callout).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if busy {
+                ProgressView().controlSize(.small)
+            } else if !ready {
+                Button("Set Up", action: action)
+            }
+        }
+    }
+}
+
+private struct CapturePreview: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 13)
+                .fill(Color(nsColor: .windowBackgroundColor))
+                .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
+            VStack(spacing: 9) {
+                HStack(spacing: 5) {
+                    Circle().fill(.red.opacity(0.7)).frame(width: 7)
+                    Circle().fill(.yellow.opacity(0.7)).frame(width: 7)
+                    Circle().fill(.green.opacity(0.7)).frame(width: 7)
+                    Spacer()
+                }
+                HStack {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Capsule().fill(.secondary.opacity(0.22)).frame(width: 110, height: 8)
+                        Capsule().fill(.secondary.opacity(0.15)).frame(width: 86, height: 8)
+                        RoundedRectangle(cornerRadius: 6).fill(.blue.opacity(0.16)).frame(width: 72, height: 28)
+                    }
+                    Spacer()
+                }
+            }
+            .padding(15)
+            Circle()
+                .stroke(.blue, style: StrokeStyle(lineWidth: 4, lineCap: .round, dash: [44, 7]))
+                .frame(width: 92, height: 72)
+                .rotationEffect(.degrees(-16))
+                .offset(x: 39, y: 25)
+            Circle()
+                .fill(.blue.opacity(0.14))
+                .frame(width: 78, height: 60)
+                .offset(x: 39, y: 25)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("A blue mouse trail circles a button and captures the screen")
+    }
+}
+
+@MainActor
+final class SetupWindowController: NSObject, NSWindowDelegate {
+    private var window: NSWindow?
+
+    func show(model: SetupModel) {
+        if let window {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        let window = NSWindow(contentViewController: NSHostingController(rootView: SetupView(model: model)))
+        window.title = "Getting Started with BetterVoice"
+        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.delegate = self
+        self.window = window
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    func close() {
+        window?.close()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        window = nil
+    }
+}
+
+@MainActor
+final class RecoveryNoticeModel: ObservableObject {
+    @Published var title = ""
+    @Published var detail = ""
+    @Published var actionTitle = "Open Setup"
+    var action: () -> Void = {}
+}
+
+private struct RecoveryNoticeView: View {
+    @ObservedObject var model: RecoveryNoticeModel
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.title2)
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(model.title).fontWeight(.semibold)
+                Text(model.detail).font(.callout).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 16)
+            Button(model.actionTitle, action: model.action)
+        }
+        .padding(18)
+        .frame(width: 540)
+    }
+}
+
+@MainActor
+final class RecoveryNoticeController: NSObject, NSWindowDelegate {
+    let model = RecoveryNoticeModel()
+    private var window: NSWindow?
+
+    func show(title: String, detail: String, actionTitle: String, action: @escaping () -> Void) {
+        model.title = title
+        model.detail = detail
+        model.actionTitle = actionTitle
+        model.action = { [weak self] in
+            self?.window?.close()
+            action()
+        }
+        if window == nil {
+            let panel = NSPanel(contentViewController: NSHostingController(rootView: RecoveryNoticeView(model: model)))
+            panel.title = "BetterVoice"
+            panel.styleMask = [.titled, .closable, .utilityWindow]
+            panel.isReleasedWhenClosed = false
+            panel.level = .floating
+            panel.delegate = self
+            panel.center()
+            window = panel
+        }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        window = nil
+    }
+}

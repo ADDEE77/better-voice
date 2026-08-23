@@ -3,6 +3,64 @@ import XCTest
 @testable import BetterVoiceCore
 
 final class CircleGestureDetectorTests: XCTestCase {
+    func testOptionHoldStartsAfterDelayAndStopsOnRelease() {
+        var shortcut = RecordingShortcutState()
+
+        XCTAssertEqual(shortcut.flagsChanged(command: false, option: true), [.schedulePushToTalk])
+        XCTAssertEqual(shortcut.pushToTalkDelayElapsed(), [.startPushToTalk])
+        XCTAssertEqual(shortcut.flagsChanged(command: false, option: false), [.stopPushToTalk])
+    }
+
+    func testOtherModifierDoesNotStopActivePushToTalk() {
+        var shortcut = RecordingShortcutState()
+
+        _ = shortcut.flagsChanged(command: false, option: true)
+        _ = shortcut.pushToTalkDelayElapsed()
+        XCTAssertEqual(
+            shortcut.flagsChanged(command: false, option: true, otherModifier: true),
+            []
+        )
+        XCTAssertEqual(shortcut.flagsChanged(command: false, option: false), [.stopPushToTalk])
+    }
+
+    func testOptionTapCancelsBeforeRecordingStarts() {
+        var shortcut = RecordingShortcutState()
+
+        XCTAssertEqual(shortcut.flagsChanged(command: false, option: true), [.schedulePushToTalk])
+        XCTAssertEqual(shortcut.flagsChanged(command: false, option: false), [.cancelPendingPushToTalk])
+        XCTAssertEqual(shortcut.pushToTalkDelayElapsed(), [])
+    }
+
+    func testCommandOptionBeforeDelayStartsLongFormOnly() {
+        var shortcut = RecordingShortcutState()
+
+        XCTAssertEqual(shortcut.flagsChanged(command: false, option: true), [.schedulePushToTalk])
+        XCTAssertEqual(
+            shortcut.flagsChanged(command: true, option: true),
+            [.cancelPendingPushToTalk, .toggleLongForm]
+        )
+        XCTAssertEqual(shortcut.pushToTalkDelayElapsed(), [])
+        XCTAssertEqual(shortcut.flagsChanged(command: false, option: false), [])
+    }
+
+    func testAddingCommandPromotesPushToTalkWithoutStopping() {
+        var shortcut = RecordingShortcutState()
+
+        _ = shortcut.flagsChanged(command: false, option: true)
+        _ = shortcut.pushToTalkDelayElapsed()
+        XCTAssertEqual(shortcut.flagsChanged(command: true, option: true), [.promoteToLongForm])
+        XCTAssertEqual(shortcut.flagsChanged(command: false, option: false), [])
+    }
+
+    func testCommandOptionTogglesOncePerChord() {
+        var shortcut = RecordingShortcutState()
+
+        XCTAssertEqual(shortcut.flagsChanged(command: true, option: true), [.toggleLongForm])
+        XCTAssertEqual(shortcut.flagsChanged(command: true, option: true), [])
+        XCTAssertEqual(shortcut.flagsChanged(command: false, option: false), [])
+        XCTAssertEqual(shortcut.flagsChanged(command: true, option: true), [.toggleLongForm])
+    }
+
     func testTrailSegmentsSkipPausesAndPointerJumps() {
         XCTAssertEqual(trailSegments(points: [], times: []), [])
         XCTAssertEqual(

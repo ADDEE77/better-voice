@@ -4,6 +4,7 @@ import AudioToolbox
 import AVFoundation
 import CoreAudio
 import CoreGraphics
+import Darwin
 import ScreenCaptureKit
 import BetterVoiceCore
 import FluidAudio
@@ -13,6 +14,7 @@ private enum BetterVoiceError: LocalizedError {
     case microphoneRoutingFailed(String, OSStatus)
     case localModelUnavailable
     case sessionUnavailable
+    case sessionStorageFull
     case screenPermissionRequired
     case screenshotUnavailable
 
@@ -22,6 +24,7 @@ private enum BetterVoiceError: LocalizedError {
         case .microphoneRoutingFailed(let name, let status): return "Could not route audio from \(name) (AudioUnit error \(status))."
         case .localModelUnavailable: return "Download the Local Parakeet model from the BetterVoice menu first."
         case .sessionUnavailable: return "The recording session is no longer available."
+        case .sessionStorageFull: return "The 500 MB saved-session limit has been reached."
         case .screenPermissionRequired: return "Enable Screen Recording for BetterVoice."
         case .screenshotUnavailable: return "The selected screen area could not be captured."
         }
@@ -301,6 +304,23 @@ private final class AudioRecorder {
     private var recordingURL: URL?
     var onLevel: (@MainActor @Sendable (Float) -> Void)?
 
+    static func removeAbandonedRecordings() {
+        let manager = FileManager.default
+        let temporary = manager.temporaryDirectory
+        guard let files = try? manager.contentsOfDirectory(
+            at: temporary,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        for file in files where file.lastPathComponent.hasPrefix("BetterVoice-") && file.pathExtension == "caf" {
+            let parts = file.deletingPathExtension().lastPathComponent.split(separator: "-", maxSplits: 2)
+            if parts.count == 3, let processID = Int32(parts[1]), kill(processID, 0) == 0 {
+                continue
+            }
+            try? manager.removeItem(at: file)
+        }
+    }
+
     func start(device: MicrophoneDevice) throws {
         precondition(engine == nil)
         let engine = AVAudioEngine()
@@ -325,7 +345,7 @@ private final class AudioRecorder {
         let format = inputNode.inputFormat(forBus: 0)
         guard format.channelCount > 0 else { throw BetterVoiceError.microphoneUnavailable }
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BetterVoice-(UUID().uuidString).caf")
+            .appendingPathComponent("BetterVoice-\(getpid())-\(UUID().uuidString).caf")
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
         let levelHandler = onLevel
 
@@ -838,24 +858,93 @@ private final class RecordingHUDController {
 }
 
 @MainActor
+private enum SessionStorage {
+    static let maxAge: TimeInterval = 7 * 24 * 60 * 60
+    static let maxBytes: Int64 = 500 * 1_024 * 1_024
+
+    static var root: URL {
+        let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return desktop.appendingPathComponent("BetterVoice", isDirectory: true)
+    }
+
+    static func prune(reservingBytes: Int64 = 0) throws {
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: root.path) else { return }
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .isDirectoryKey]
+        let folders = try manager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        )
+        let sessions = folders.compactMap { folder -> StoredSession? in
+            guard isBetterVoiceSessionName(folder.lastPathComponent) else { return nil }
+            guard let values = try? folder.resourceValues(forKeys: keys), values.isDirectory == true else {
+                return nil
+            }
+            return StoredSession(
+                name: folder.lastPathComponent,
+                modifiedAt: values.contentModificationDate ?? .distantPast,
+                bytes: allocatedBytes(in: folder)
+            )
+        }
+        let policy = SessionRetentionPolicy(maxAge: maxAge, maxBytes: max(0, maxBytes - reservingBytes))
+        for name in policy.sessionsToRemove(from: sessions, now: Date()) {
+            try manager.removeItem(at: root.appendingPathComponent(name, isDirectory: true))
+        }
+    }
+
+    static func clear() throws {
+        guard FileManager.default.fileExists(atPath: root.path) else { return }
+        try FileManager.default.removeItem(at: root)
+    }
+
+    static func allocatedBytes(in folder: URL) -> Int64 {
+        let keys: Set<URLResourceKey> = [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey]
+        guard let files = FileManager.default.enumerator(
+            at: folder,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        return files.reduce(into: Int64(0)) { total, item in
+            guard let url = item as? URL, let values = try? url.resourceValues(forKeys: keys) else { return }
+            total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+        }
+    }
+}
+
+@MainActor
 private final class SessionOutput {
     let folder: URL
     private(set) var images: [URL] = []
+    private var usedBytes: Int64
 
     init() throws {
-        let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let root = desktop.appendingPathComponent("BetterVoice", isDirectory: true)
+        let transcriptReserve: Int64 = 1_024 * 1_024
+        try SessionStorage.prune(reservingBytes: transcriptReserve)
+        usedBytes = SessionStorage.allocatedBytes(in: SessionStorage.root) + transcriptReserve
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        folder = root.appendingPathComponent("\(stamp)-\(UUID().uuidString)", isDirectory: true)
+        folder = SessionStorage.root.appendingPathComponent("\(stamp)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     }
 
     func addImage(for gesture: CircleGesture) async throws -> URL {
         let url = folder.appendingPathComponent("context-\(images.count + 1).png")
         try await ScreenshotCapture.capture(gesture: gesture, to: url)
+        let values = try url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey])
+        let bytes = Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
+        let policy = SessionRetentionPolicy(maxAge: SessionStorage.maxAge, maxBytes: SessionStorage.maxBytes)
+        guard policy.canStore(additionalBytes: bytes, usedBytes: usedBytes) else {
+            try? FileManager.default.removeItem(at: url)
+            throw BetterVoiceError.sessionStorageFull
+        }
+        usedBytes += bytes
         images.append(url)
         return url
+    }
+
+    func discard() {
+        try? FileManager.default.removeItem(at: folder)
     }
 
     func finish(
@@ -873,9 +962,8 @@ private final class SessionOutput {
         }
         let markdownURL = folder.appendingPathComponent("context.md")
         try markdown.write(to: markdownURL, atomically: true, encoding: .utf8)
-        let transcriptInserted = !images.isEmpty && TextInsertion.insert(trimmed, into: target)
+        let transcriptInserted = !trimmed.isEmpty && TextInsertion.insert(trimmed, into: target)
         let clipboardCopied = Clipboard.copy(transcript: trimmed, images: images)
-        print(trimmed)
         return (markdownURL, clipboardCopied, transcriptInserted)
     }
 }
@@ -891,7 +979,7 @@ private enum Clipboard {
         var imageItems: [NSPasteboardItem] = []
         for (index, imageURL) in images.enumerated() {
             guard let data = try? Data(contentsOf: imageURL), let image = NSImage(data: data) else {
-                return false
+                return copyTextOnly(transcript)
             }
             let attachment = NSTextAttachment()
             attachment.image = image
@@ -899,7 +987,7 @@ private enum Clipboard {
             rich.append(NSAttributedString(string: "\nContext \(index + 1)\n\n"))
 
             let imageItem = NSPasteboardItem()
-            guard imageItem.setData(data, forType: .png) else { return false }
+            guard imageItem.setData(data, forType: .png) else { return copyTextOnly(transcript) }
             if let tiff = image.tiffRepresentation { imageItem.setData(tiff, forType: .tiff) }
             imageItem.setString(imageURL.absoluteString, forType: .fileURL)
             imageItems.append(imageItem)
@@ -908,7 +996,7 @@ private enum Clipboard {
         // Codex attaches separate pasteboard images last-in-first-out.
         var objects: [NSPasteboardWriting] = imageItems.reversed()
         if !transcript.isEmpty {
-            guard textItem.setString(transcript, forType: .string) else { return false }
+            guard textItem.setString(transcript, forType: .string) else { return copyTextOnly(transcript) }
             if let rtf = try? rich.data(
                 from: NSRange(location: 0, length: rich.length),
                 documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
@@ -917,7 +1005,17 @@ private enum Clipboard {
             }
             objects.append(textItem)
         }
-        return !objects.isEmpty && pasteboard.writeObjects(objects)
+        guard !objects.isEmpty, pasteboard.writeObjects(objects) else {
+            return copyTextOnly(transcript)
+        }
+        return true
+    }
+
+    private static func copyTextOnly(_ transcript: String) -> Bool {
+        guard !transcript.isEmpty else { return false }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        return pasteboard.setString(transcript, forType: .string)
     }
 }
 
@@ -1019,27 +1117,50 @@ private final class InputMonitor {
     private var globalFlagsMonitor: Any?
     private var localFlagsMonitor: Any?
     private var mouseTimer: Timer?
+    private var pushToTalkTimer: Timer?
     private var lastMouseLocation: CGPoint?
-    private var chordLatched = false
-    private let toggle: () -> Void
+    private var shortcut = RecordingShortcutState()
+    private let startPushToTalk: () -> Void
+    private let stopPushToTalk: () -> Void
+    private let toggleLongForm: () -> Void
+    private let promoteToLongForm: () -> Void
     private let mouseMoved: (CGPoint) -> Void
 
-    init(toggle: @escaping () -> Void, mouseMoved: @escaping (CGPoint) -> Void) {
-        self.toggle = toggle
+    init(
+        startPushToTalk: @escaping () -> Void,
+        stopPushToTalk: @escaping () -> Void,
+        toggleLongForm: @escaping () -> Void,
+        promoteToLongForm: @escaping () -> Void,
+        mouseMoved: @escaping (CGPoint) -> Void
+    ) {
+        self.startPushToTalk = startPushToTalk
+        self.stopPushToTalk = stopPushToTalk
+        self.toggleLongForm = toggleLongForm
+        self.promoteToLongForm = promoteToLongForm
         self.mouseMoved = mouseMoved
     }
 
     func start() {
-        chordLatched = false
-        let flagsHandler: (NSEvent) -> Void = { [weak self] event in
-            DispatchQueue.main.async { self?.handleFlags(event.modifierFlags) }
-        }
-        globalFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged, handler: flagsHandler)
-        localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            DispatchQueue.main.async { self?.handleFlags(event.modifierFlags) }
-            return event
-        }
+        shortcut = RecordingShortcutState()
+        refreshKeyboardMonitoring()
+    }
 
+    func refreshKeyboardMonitoring() {
+        if let monitor = globalFlagsMonitor { NSEvent.removeMonitor(monitor) }
+        globalFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            DispatchQueue.main.async { self?.handleFlags(event.modifierFlags) }
+        }
+        if localFlagsMonitor == nil {
+            localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                DispatchQueue.main.async { self?.handleFlags(event.modifierFlags) }
+                return event
+            }
+        }
+    }
+
+    func startMouseTracking() {
+        guard mouseTimer == nil else { return }
+        lastMouseLocation = nil
         let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
             DispatchQueue.main.async { self?.sampleMouse() }
         }
@@ -1047,25 +1168,60 @@ private final class InputMonitor {
         RunLoop.main.add(timer, forMode: .common)
     }
 
+    func stopMouseTracking() {
+        mouseTimer?.invalidate()
+        mouseTimer = nil
+        lastMouseLocation = nil
+    }
+
     func stop() {
         if let monitor = globalFlagsMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = localFlagsMonitor { NSEvent.removeMonitor(monitor) }
         mouseTimer?.invalidate()
+        pushToTalkTimer?.invalidate()
         globalFlagsMonitor = nil
         localFlagsMonitor = nil
         mouseTimer = nil
+        pushToTalkTimer = nil
         lastMouseLocation = nil
     }
 
     private func handleFlags(_ flags: NSEvent.ModifierFlags) {
         let normalized = flags.intersection(.deviceIndependentFlagsMask)
-        let chordHeld = normalized.contains(.command) && normalized.contains(.option)
-        if chordHeld {
-            guard !chordLatched else { return }
-            chordLatched = true
-            toggle()
-        } else {
-            chordLatched = false
+        let blocked = normalized.contains(.shift) || normalized.contains(.control)
+        apply(shortcut.flagsChanged(
+            command: normalized.contains(.command),
+            option: normalized.contains(.option),
+            otherModifier: blocked
+        ))
+    }
+
+    private func apply(_ actions: [RecordingShortcutAction]) {
+        for action in actions {
+            switch action {
+            case .schedulePushToTalk:
+                pushToTalkTimer?.invalidate()
+                let timer = Timer(timeInterval: 0.14, repeats: false) { [weak self] _ in
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        self.pushToTalkTimer = nil
+                        self.apply(self.shortcut.pushToTalkDelayElapsed())
+                    }
+                }
+                pushToTalkTimer = timer
+                RunLoop.main.add(timer, forMode: .common)
+            case .cancelPendingPushToTalk:
+                pushToTalkTimer?.invalidate()
+                pushToTalkTimer = nil
+            case .startPushToTalk:
+                startPushToTalk()
+            case .stopPushToTalk:
+                stopPushToTalk()
+            case .toggleLongForm:
+                toggleLongForm()
+            case .promoteToLongForm:
+                promoteToLongForm()
+            }
         }
     }
 
@@ -1083,6 +1239,11 @@ private enum SessionState {
     case finishing
 }
 
+private enum RecordingMode {
+    case pushToTalk
+    case longForm
+}
+
 private enum StatusIconState {
     case idle
     case recording
@@ -1097,38 +1258,56 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     private let transcriber = LocalTranscriber()
     private let trailOverlay = TrailOverlayController()
     private let recordingHUD = RecordingHUDController()
+    private let setupWindow = SetupWindowController()
+    private let recoveryNotice = RecoveryNoticeController()
     private var inputMonitor: InputMonitor?
     private var detector = CircleGestureDetector()
     private var output: SessionOutput?
     private var transcript = ""
     private var state = SessionState.idle
+    private var recordingMode: RecordingMode?
     private var statusMenuItem: NSMenuItem?
     private var recordingMenuItem: NSMenuItem?
     private var modelMenuItem: NSMenuItem?
     private var microphoneMenu: NSMenu?
     private var statusAnimationTimer: Timer?
     private var statusFeedbackTimer: Timer?
+    private var recordingLimitTimer: Timer?
     private var captureTasks: [Task<Void, Never>] = []
     private var textInsertionTarget: AXUIElement?
     private var statusPulse = false
     private var reduceMotion = false
+    private lazy var setupModel: SetupModel = {
+        let model = SetupModel()
+        model.requestMicrophone = { [weak self] in self?.requestMicrophoneAuthorization() }
+        model.requestScreen = { [weak self] in self?.requestScreenCaptureAuthorization() }
+        model.requestAccessibility = { [weak self] in self?.requestTextInsertionAuthorization() }
+        model.downloadModel = { [weak self] in self?.downloadModel() }
+        model.refresh = { [weak self] in self?.refreshSetupModel() }
+        model.complete = { [weak self] in
+            UserDefaults.standard.set(true, forKey: "completedOnboarding")
+            self?.setupWindow.close()
+        }
+        return model
+    }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AudioRecorder.removeAbandonedRecordings()
         microphones.refresh()
         reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         setStatusIcon(.idle)
         statusItem.button?.imagePosition = .imageOnly
         statusItem.button?.imageScaling = .scaleProportionallyDown
-        statusItem.button?.toolTip = "BetterVoice — hold ⌘⌥ to record • Microphone: \(microphones.selectedLabel)"
+        statusItem.button?.toolTip = "BetterVoice — hold ⌥ or press ⌘⌥ • Microphone: \(microphones.selectedLabel)"
 
         let menu = NSMenu()
-        let statusMenuItem = NSMenuItem(title: "Ready • hold ⌘⌥ to record", action: nil, keyEquivalent: "")
+        let statusMenuItem = NSMenuItem(title: "Ready • hold ⌥ or press ⌘⌥", action: nil, keyEquivalent: "")
         statusMenuItem.isEnabled = false
         self.statusMenuItem = statusMenuItem
         menu.addItem(statusMenuItem)
         menu.addItem(NSMenuItem.separator())
 
-        let recordingItem = NSMenuItem(title: "Start recording (⌘⌥)", action: #selector(toggleRecording), keyEquivalent: "")
+        let recordingItem = NSMenuItem(title: "Start long recording (⌘⌥)", action: #selector(toggleRecording), keyEquivalent: "")
         recordingItem.target = self
         recordingMenuItem = recordingItem
         menu.addItem(recordingItem)
@@ -1144,6 +1323,18 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         self.microphoneMenu = microphoneMenu
         menu.addItem(microphoneItem)
         menu.addItem(NSMenuItem.separator())
+
+        let setupItem = NSMenuItem(title: "Getting Started…", action: #selector(showSetup), keyEquivalent: ",")
+        setupItem.target = self
+        menu.addItem(setupItem)
+        let sessionsItem = NSMenuItem(title: "Open Saved Sessions", action: #selector(openSavedSessions), keyEquivalent: "")
+        sessionsItem.target = self
+        menu.addItem(sessionsItem)
+        let clearItem = NSMenuItem(title: "Clear Saved Sessions…", action: #selector(clearSavedSessions), keyEquivalent: "")
+        clearItem.target = self
+        menu.addItem(clearItem)
+        menu.addItem(NSMenuItem.separator())
+
         let quitItem = NSMenuItem(title: "Quit BetterVoice", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -1152,20 +1343,42 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         refreshMicrophoneMenu()
         refreshModelMenu()
 
-        transcriber.onStateChange = { [weak self] in self?.refreshModelMenu() }
-        recorder.onLevel = { [weak self] level in self?.recordingHUD.update(level: level) }
+        transcriber.onStateChange = { [weak self] in
+            self?.refreshModelMenu()
+            self?.refreshSetupModel()
+        }
+            recorder.onLevel = { [weak self] level in self?.recordingHUD.update(level: level) }
         Task { await transcriber.loadCachedModel() }
 
         inputMonitor = InputMonitor(
-            toggle: { [weak self] in self?.toggleRecording() },
+            startPushToTalk: { [weak self] in self?.startPushToTalk() },
+            stopPushToTalk: { [weak self] in self?.stopPushToTalk() },
+            toggleLongForm: { [weak self] in self?.toggleRecording() },
+            promoteToLongForm: { [weak self] in self?.promoteToLongForm() },
             mouseMoved: { [weak self] quartzPoint in
                 self?.handleMouse(quartzPoint: quartzPoint)
             }
         )
         inputMonitor?.start()
-        requestMicrophoneAuthorization()
-        requestScreenCaptureAuthorizationOnce()
-        requestTextInsertionAuthorizationOnce()
+        do {
+            try SessionStorage.prune()
+        } catch {
+            showError("Saved-session cleanup failed", detail: error.localizedDescription)
+        }
+        if !UserDefaults.standard.bool(forKey: "completedOnboarding") {
+            DispatchQueue.main.async { [weak self] in self?.showSetup() }
+        }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        if AXIsProcessTrusted() {
+            inputMonitor?.refreshKeyboardMonitoring()
+        }
+        refreshSetupModel()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        shutdown()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -1237,6 +1450,70 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         }
     }
 
+    private func refreshSetupModel() {
+        if #available(macOS 14.0, *) {
+            setupModel.microphoneGranted = AVAudioApplication.shared.recordPermission == .granted
+        } else {
+            setupModel.microphoneGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        }
+        setupModel.screenGranted = CGPreflightScreenCaptureAccess()
+        setupModel.accessibilityGranted = AXIsProcessTrusted()
+        microphones.refresh()
+        setupModel.microphoneName = microphones.selectedLabel
+        switch transcriber.state {
+        case .missing:
+            setupModel.modelStatus = "Download once (~500 MB); transcription stays on this Mac"
+            setupModel.modelReady = false
+            setupModel.modelBusy = false
+        case .downloading(let percent):
+            setupModel.modelStatus = "Downloading… \(percent)%"
+            setupModel.modelReady = false
+            setupModel.modelBusy = true
+        case .loading:
+            setupModel.modelStatus = "Loading…"
+            setupModel.modelReady = false
+            setupModel.modelBusy = true
+        case .ready:
+            setupModel.modelStatus = "Parakeet model ready"
+            setupModel.modelReady = true
+            setupModel.modelBusy = false
+        case .failed(let message):
+            setupModel.modelStatus = "Download failed: \(message)"
+            setupModel.modelReady = false
+            setupModel.modelBusy = false
+        }
+    }
+
+    @objc private func showSetup() {
+        refreshSetupModel()
+        setupWindow.show(model: setupModel)
+    }
+
+    @objc private func openSavedSessions() {
+        do {
+            try FileManager.default.createDirectory(at: SessionStorage.root, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(SessionStorage.root)
+        } catch {
+            showError("Could not open saved sessions", detail: error.localizedDescription)
+        }
+    }
+
+    @objc private func clearSavedSessions() {
+        let alert = NSAlert()
+        alert.messageText = "Clear all saved BetterVoice sessions?"
+        alert.informativeText = "This permanently removes transcripts and screenshots from Desktop/BetterVoice."
+        alert.addButton(withTitle: "Clear Sessions")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try SessionStorage.clear()
+            showStatus("Saved sessions cleared", resetAfter: 4)
+        } catch {
+            showError("Could not clear saved sessions", detail: error.localizedDescription)
+        }
+    }
+
     @objc private func downloadModel() {
         guard state == .idle else { return }
         showStatus("Downloading local model…")
@@ -1244,7 +1521,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             await transcriber.downloadModel()
             switch transcriber.state {
             case .ready:
-                showStatus("Local model ready • hold ⌘⌥ to record", resetAfter: 4)
+                showStatus("Local model ready • hold ⌥ or press ⌘⌥", resetAfter: 4)
             case .failed(let message):
                 showError("Model download failed: \(message)")
             default:
@@ -1256,7 +1533,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     @objc private func toggleRecording() {
         switch state {
         case .idle:
-            startRecording()
+            startRecording(mode: .longForm)
         case .recording:
             stopRecording()
         case .finishing:
@@ -1264,7 +1541,27 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         }
     }
 
-    private func startRecording() {
+    private func startPushToTalk() {
+        guard state == .idle else { return }
+        startRecording(mode: .pushToTalk)
+    }
+
+    private func stopPushToTalk() {
+        guard state == .recording, recordingMode == .pushToTalk else { return }
+        stopRecording()
+    }
+
+    private func promoteToLongForm() {
+        if state == .idle {
+            startRecording(mode: .longForm)
+        } else if state == .recording, recordingMode == .pushToTalk {
+            recordingMode = .longForm
+            showStatus("Recording • long-form mode")
+            updateMenuTitle("Stop long recording (⌘⌥)", enabled: true)
+        }
+    }
+
+    private func startRecording(mode: RecordingMode) {
         do {
             guard transcriber.state == .ready else { throw BetterVoiceError.localModelUnavailable }
             microphones.refresh()
@@ -1277,24 +1574,49 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             detector.reset()
             transcript = ""
             try recorder.start(device: selectedMicrophone)
+            textInsertionTarget = TextInsertion.captureTarget()
             state = .recording
+            recordingMode = mode
+            inputMonitor?.startMouseTracking()
+            let timer = Timer(timeInterval: 20 * 60, repeats: false) { [weak self] _ in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.state == .recording else { return }
+                    self.stopRecording()
+                    self.showError(
+                        "20-minute recording limit reached",
+                        detail: "The recording stopped safely and is being transcribed now."
+                    )
+                }
+            }
+            recordingLimitTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
             refreshMicrophoneMenu()
             refreshModelMenu()
             trailOverlay.start()
             recordingHUD.show(microphone: selectedMicrophone.name)
             setStatusIcon(.recording)
             showStatus("Recording • Microphone: \(selectedMicrophone.name)")
-            updateMenuTitle("Stop recording (⌘⌥)", enabled: true)
+            updateMenuTitle(
+                mode == .pushToTalk ? "Release ⌥ to stop" : "Stop long recording (⌘⌥)",
+                enabled: true
+            )
         } catch {
+            output?.discard()
             output = nil
+            recordingMode = nil
             showError(error.localizedDescription)
         }
     }
 
     private func stopRecording() {
         guard state == .recording else { return }
-        textInsertionTarget = TextInsertion.captureTarget()
+        recordingLimitTimer?.invalidate()
+        recordingLimitTimer = nil
+        if let latestTarget = TextInsertion.captureTarget() {
+            textInsertionTarget = latestTarget
+        }
         state = .finishing
+        inputMonitor?.stopMouseTracking()
         refreshMicrophoneMenu()
         trailOverlay.stop()
         recordingHUD.showFinishing()
@@ -1335,11 +1657,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             output = nil
             textInsertionTarget = nil
             state = .idle
+            recordingMode = nil
             recordingHUD.hide()
             refreshMicrophoneMenu()
             refreshModelMenu()
             setStatusIcon(.idle)
-            updateMenuTitle("Start recording (⌘⌥)", enabled: true)
+            updateMenuTitle("Start long recording (⌘⌥)", enabled: true)
 
             if let transcriptionError {
                 let delivery = result.clipboardCopied
@@ -1361,15 +1684,17 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             } else {
                 showError("Saved session; plain-text clipboard fallback used.")
             }
+            pruneSavedSessions()
         } catch {
             output = nil
             textInsertionTarget = nil
             state = .idle
+            recordingMode = nil
             recordingHUD.hide()
             refreshMicrophoneMenu()
             refreshModelMenu()
             setStatusIcon(.idle)
-            updateMenuTitle("Start recording (⌘⌥)", enabled: true)
+            updateMenuTitle("Start long recording (⌘⌥)", enabled: true)
             if let transcriptionError {
                 showError("Transcription failed: \(transcriptionError.localizedDescription); session save failed: \(error.localizedDescription)")
             } else {
@@ -1400,11 +1725,29 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
                 let message: String
                 if case BetterVoiceError.screenPermissionRequired = error {
                     message = "Screen permission required"
+                } else if case BetterVoiceError.sessionStorageFull = error {
+                    message = "Saved-session limit reached"
                 } else {
                     message = "Screenshot failed"
                 }
                 self.recordingHUD.showCaptureError(message)
-                self.showError(error.localizedDescription)
+                if case BetterVoiceError.screenPermissionRequired = error {
+                    self.showError(
+                        "Screen Recording access is off",
+                        detail: "Enable BetterVoice in Privacy & Security → Screen Recording, then reopen the app.",
+                        actionTitle: "Open Settings",
+                        action: { [weak self] in self?.openPrivacySettings("Privacy_ScreenCapture") }
+                    )
+                } else if case BetterVoiceError.sessionStorageFull = error {
+                    self.showError(
+                        error.localizedDescription,
+                        detail: "Finish this recording, or clear older sessions from the BetterVoice menu.",
+                        actionTitle: "Manage Sessions",
+                        action: { [weak self] in self?.openSavedSessions() }
+                    )
+                } else {
+                    self.showError("Screenshot capture failed", detail: error.localizedDescription)
+                }
             }
         }
         captureTasks.append(task)
@@ -1427,37 +1770,76 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
 
     private func requestMicrophoneAuthorization() {
         if #available(macOS 14.0, *) {
+            if AVAudioApplication.shared.recordPermission == .denied {
+                openPrivacySettings("Privacy_Microphone")
+                return
+            }
             let controller = self
             AVAudioApplication.requestRecordPermission { granted in
-                guard !granted else { return }
                 DispatchQueue.main.async { [weak controller] in
-                    controller?.showError("Allow Microphone access in System Settings to record speech.")
+                    controller?.refreshSetupModel()
+                    if !granted {
+                        controller?.showError(
+                            "Microphone access is off",
+                            detail: "Enable BetterVoice in Privacy & Security → Microphone."
+                        )
+                    }
                 }
             }
         } else {
+            if AVCaptureDevice.authorizationStatus(for: .audio) == .denied {
+                openPrivacySettings("Privacy_Microphone")
+                return
+            }
             let controller = self
             AVCaptureDevice.requestAccess(for: .audio) { granted in
-                guard !granted else { return }
                 DispatchQueue.main.async { [weak controller] in
-                    controller?.showError("Allow Microphone access in System Settings to record speech.")
+                    controller?.refreshSetupModel()
+                    if !granted {
+                        controller?.showError(
+                            "Microphone access is off",
+                            detail: "Enable BetterVoice in Privacy & Security → Microphone."
+                        )
+                    }
                 }
             }
         }
     }
 
-    private func requestScreenCaptureAuthorizationOnce() {
-        let requestKey = "requestedScreenCaptureForStableSignature"
-        guard !CGPreflightScreenCaptureAccess(), !UserDefaults.standard.bool(forKey: requestKey) else { return }
-        UserDefaults.standard.set(true, forKey: requestKey)
-        _ = CGRequestScreenCaptureAccess()
+    private func requestScreenCaptureAuthorization() {
+        guard !CGPreflightScreenCaptureAccess() else {
+            refreshSetupModel()
+            return
+        }
+        if !CGRequestScreenCaptureAccess() {
+            openPrivacySettings("Privacy_ScreenCapture")
+        }
+        refreshSetupModel()
     }
 
-    private func requestTextInsertionAuthorizationOnce() {
-        let requestKey = "requestedTextInsertionForStableSignature"
-        guard !AXIsProcessTrusted(), !UserDefaults.standard.bool(forKey: requestKey) else { return }
-        UserDefaults.standard.set(true, forKey: requestKey)
+    private func requestTextInsertionAuthorization() {
+        guard !AXIsProcessTrusted() else {
+            refreshSetupModel()
+            return
+        }
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            self?.refreshSetupModel()
+        }
+    }
+
+    private func openPrivacySettings(_ pane: String) {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func pruneSavedSessions() {
+        do {
+            try SessionStorage.prune()
+        } catch {
+            showError("Saved-session cleanup failed", detail: error.localizedDescription)
+        }
     }
 
     private func updateMenuTitle(_ title: String, enabled: Bool) {
@@ -1475,7 +1857,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         let timer = Timer(timeInterval: resetAfter, repeats: false) { [weak self] _ in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.state == .idle else { return }
-                self.showStatus("Ready • hold ⌘⌥ to record")
+                self.showStatus("Ready • hold ⌥ or press ⌘⌥")
             }
         }
         statusFeedbackTimer = timer
@@ -1511,18 +1893,41 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         statusItem.button?.image = image
     }
 
-    private func showError(_ message: String) {
-        NSSound.beep()
-        showStatus("Error: \(message)", resetAfter: 6)
+    private func showError(
+        _ message: String,
+        detail: String? = nil,
+        actionTitle: String = "Open Setup",
+        action: (() -> Void)? = nil
+    ) {
+        showStatus("Needs attention: \(message)", resetAfter: 8)
+        recoveryNotice.show(
+            title: message,
+            detail: detail ?? "Open setup to check permissions, microphone, and the local model.",
+            actionTitle: actionTitle,
+            action: action ?? { [weak self] in self?.showSetup() }
+        )
     }
 
     @objc private func quit() {
+        shutdown()
+        NSApplication.shared.terminate(nil)
+    }
+
+    private func shutdown() {
         inputMonitor?.stop()
         trailOverlay.stop()
         recordingHUD.hide()
         statusAnimationTimer?.invalidate()
         statusFeedbackTimer?.invalidate()
-        NSApplication.shared.terminate(nil)
+        recordingLimitTimer?.invalidate()
+        if state == .recording {
+            if let audioURL = try? recorder.stop() {
+                try? FileManager.default.removeItem(at: audioURL)
+            }
+            output?.discard()
+            output = nil
+            state = .idle
+        }
     }
 }
 

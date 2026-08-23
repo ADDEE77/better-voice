@@ -3,6 +3,17 @@ set -euo pipefail
 
 swift build -c release
 app_dir=".build/BetterVoice.app"
+if pgrep -x BetterVoice >/dev/null; then
+  osascript -e 'tell application id "com.tarun.bettervoice" to quit'
+  for _ in {1..50}; do
+    pgrep -x BetterVoice >/dev/null || break
+    sleep 0.1
+  done
+  if pgrep -x BetterVoice >/dev/null; then
+    print -u2 "BetterVoice did not quit cleanly; close it and run the build again."
+    exit 1
+  fi
+fi
 rm -rf ".build/BetterVoice.app"
 mkdir -p "$app_dir/Contents/MacOS"
 cp ".build/release/BetterVoice" "$app_dir/Contents/MacOS/BetterVoice"

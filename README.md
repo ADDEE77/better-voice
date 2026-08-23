@@ -1,27 +1,23 @@
-# Better Voice
+# BetterVoice
 
 Voice dictation with the screen context you point at.
 
-Better Voice is an experimental macOS menu-bar app that records speech, transcribes it locally, and captures the parts of the screen you circle with your mouse. It is designed for prompts such as “make this button clearer” where the words and the visual reference belong together.
+BetterVoice is an experimental, open-source macOS menu-bar app. It transcribes speech locally and captures the full screen whenever you circle something with your pointer, leaving a restrained blue highlight around the referenced area.
 
-## How it works
+![BetterVoice onboarding and visual capture preview](docs/assets/bettervoice-onboarding.png)
 
-1. Press `⌘⌥` (Command + Option) to start recording.
-2. Speak normally. While recording, circle anything important with the pointer.
-3. A blue trail follows the pointer and a blue ring confirms each capture.
-4. Press `⌘⌥` again to stop.
-5. Better Voice transcribes locally, inserts the transcript into the selected text field when possible, and places the transcript and captured images on the clipboard.
+## Use it
 
-Each gesture captures the full display containing the pointer and marks the circled area with a restrained blue highlight. Multiple circles create multiple screenshots.
+- Hold `⌥` for a quick note. Recording starts after a short hold and finishes when you release.
+- Press `⌘⌥` for a long explanation. Press it again to finish.
+- While recording, circle any important UI with the pointer. A blue trail follows your movement and a pulse confirms each capture.
+- BetterVoice inserts the transcript into the selected text field when macOS allows it, then copies the transcript and captured images to the clipboard.
 
-## Requirements
+Each circle captures the complete display beneath the pointer. Multiple circles produce screenshots in the same order you referenced them.
 
-- macOS 14 or newer
-- Xcode command-line tools with Swift 6
-- A local Apple code-signing identity, so macOS permissions survive rebuilds
-- Microphone, Screen Recording, and Accessibility permissions
+## Install from source
 
-## Build and run
+Requirements: macOS 14+, Swift 6/Xcode command-line tools, and a local Apple code-signing identity.
 
 ```sh
 git clone https://github.com/TarunTomar122/better-voice.git
@@ -29,37 +25,49 @@ cd better-voice
 ./scripts/build-app.sh
 ```
 
-The script builds a release app at `.build/BetterVoice.app`, signs it, and launches it. To choose a specific signing identity:
+The script builds, signs, and opens `.build/BetterVoice.app`. BetterVoice then walks through:
+
+1. Microphone permission
+2. Screen Recording permission
+3. Accessibility permission for returning text to the selected field
+4. The one-time local Parakeet model download (~500 MB)
+
+Automatic microphone selection prefers a connected external input and falls back to the system input. You can choose a specific device from the menu bar.
+
+To keep macOS permissions attached to the same identity across rebuilds, explicitly select your certificate when needed:
 
 ```sh
 BETTERVOICE_SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)" ./scripts/build-app.sh
 ```
 
-On first launch:
+## If something is not working
 
-1. Grant Microphone, Screen Recording, and Accessibility access in System Settings.
-2. Open the Better Voice menu-bar item.
-3. Select **Download Local Model (~500 MB)**.
-4. Choose an input from the **Microphone** submenu, or keep **Automatic**. Automatic prefers a connected external microphone and falls back to the system input.
+Open the menu-bar icon and choose **Getting Started…**. It shows the live state of the microphone, Screen Recording, Accessibility, selected input, and local model. Errors stay visible in a small recovery window with a path back to setup instead of disappearing as a system beep.
 
-The workflow uses FluidAudio's local Parakeet v2 model. Audio stays on the Mac and the temporary recording is removed after transcription.
+- **Shortcut does nothing:** enable **Accessibility**, confirm the local model says Ready, and make sure only one BetterVoice process is running. The build script closes the previous process before launching a rebuild.
+- **No screenshot:** enable BetterVoice in **System Settings → Privacy & Security → Screen Recording**, then quit and reopen the app. The setup screen reads the current macOS permission every time; it does not cache an old answer.
+- **Transcript is not inserted:** enable **Accessibility**. The transcript remains on the clipboard and in the saved session when the target app blocks direct insertion.
+- **Wrong microphone:** choose the device under **Microphone** in the menu-bar menu.
+- **Model download failed:** reopen **Getting Started…** and retry from the model row.
 
 ## Clipboard behavior
 
-macOS paste targets decide which clipboard representation they accept. Better Voice therefore:
+macOS lets one clipboard contain text, rich text, and image representations, but each destination decides which representation to accept. BetterVoice therefore attempts direct transcript insertion and also writes text plus separate PNG/TIFF image items to the clipboard. In attachment-aware editors, press `⌘V` once after recording to attach the images.
 
-- inserts the transcript back into the text field that was active when recording stopped, when Accessibility allows it;
-- writes plain text, rich text, PNG, and TIFF representations to the clipboard;
-- keeps every session on disk as a reliable fallback.
+## Privacy and storage
 
-In editors that accept attachments, press `⌘V` once after recording to attach the captured images. Plain-text fields paste the transcript only.
+- Transcription runs locally through [FluidAudio](https://github.com/FluidInference/FluidAudio).
+- Temporary audio is deleted after transcription.
+- Sessions live in `~/Desktop/BetterVoice` for at most 7 days.
+- Saved sessions are capped at 500 MB, including during an active capture; the oldest are removed first.
+- The local speech model is a separate one-time cache of roughly 500 MB.
+- Recordings stop safely at 20 minutes, and abandoned temporary audio is removed on launch.
+- Use **Open Saved Sessions** or **Clear Saved Sessions…** from the menu bar at any time.
 
-## Saved sessions
-
-Sessions are stored locally:
+A session contains:
 
 ```text
-~/Desktop/BetterVoice/<timestamp>-<id>/
+<timestamp>-<id>/
 ├── context.md
 ├── context-1.png
 └── context-2.png
@@ -67,19 +75,12 @@ Sessions are stored locally:
 
 ## Development
 
-Run the focused gesture and trail tests with:
-
 ```sh
 swift test -Xswiftc -strict-concurrency=complete
 ```
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the compact implementation map.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the implementation map.
 
-## Current scope
+Current scope: English transcription, source builds, and macOS 14+. There is no notarized binary release yet. Circle recognition is intentionally forgiving; you do not need to draw a perfect circle.
 
-- English transcription
-- Fixed `⌘⌥` shortcut
-- Source build; no notarized release yet
-- Circle detection is intentionally forgiving and does not require a perfect circle
-
-Built for personal experimentation and inspired by the fluidity of Wispr Flow. Better Voice is not affiliated with Wispr Flow.
+Inspired by the fluidity of Wispr Flow. BetterVoice is not affiliated with Wispr Flow.
