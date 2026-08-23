@@ -20,8 +20,6 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>BetterVoice records your voice while you describe screen changes.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>BetterVoice transcribes your voice while you describe screen changes.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>BetterVoice captures the screen areas you circle while recording.</string>
 </dict>

@@ -1,141 +1,330 @@
 import AppKit
 import ApplicationServices
+import AudioToolbox
 import AVFoundation
+import CoreAudio
 import CoreGraphics
 import BetterVoiceCore
-import Speech
+import FluidAudio
 
 private enum BetterVoiceError: LocalizedError {
     case microphoneUnavailable
-    case speechUnavailable
+    case microphoneSelectionUnavailable(String)
+    case microphoneRoutingFailed(String, OSStatus)
+    case localModelUnavailable
     case sessionUnavailable
     case screenshotUnavailable
 
     var errorDescription: String? {
         switch self {
         case .microphoneUnavailable: return "No microphone input is available."
-        case .speechUnavailable: return "Speech recognition is unavailable."
+        case .microphoneSelectionUnavailable(let name): return "Selected microphone is unavailable: \(name). Choose another microphone from the menu."
+        case .microphoneRoutingFailed(let name, let status): return "Could not route audio from \(name) (AudioUnit error \(status))."
+        case .localModelUnavailable: return "Download the Local Parakeet model from the BetterVoice menu first."
         case .sessionUnavailable: return "The recording session is no longer available."
         case .screenshotUnavailable: return "The screen could not be captured. Enable Screen Recording for BetterVoice."
         }
     }
 }
 
+private struct MicrophoneDevice: Equatable {
+    let id: AudioDeviceID
+    let uid: String
+    let name: String
+}
+
 @MainActor
-private final class SpeechRecorder: NSObject {
-    private let recognizer = SFSpeechRecognizer(locale: Locale.current)
-    private let audioEngine = AVAudioEngine()
-    private var request: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
-    private var latestTranscript = ""
-    private var recognitionError: Error?
-    private var recognitionFinished = false
-    private var activeID: UUID?
-    private var pendingFinish: (id: UUID, completion: (Result<String, Error>) -> Void)?
-    private let partialFinalizationTimeout: TimeInterval = 3
-    private let coldFinalizationTimeout: TimeInterval = 8
+private final class MicrophoneManager {
+    private let selectedUIDKey = "selectedMicrophoneUID"
+    private(set) var devices: [MicrophoneDevice] = []
 
-    var onTranscript: ((String) -> Void)?
+    var selectedUID: String? {
+        UserDefaults.standard.string(forKey: selectedUIDKey)
+    }
 
-    func start() throws {
-        precondition(activeID == nil && pendingFinish == nil)
-        guard let recognizer, recognizer.isAvailable else { throw BetterVoiceError.speechUnavailable }
-        guard audioEngine.inputNode.inputFormat(forBus: 0).channelCount > 0 else {
-            throw BetterVoiceError.microphoneUnavailable
+    var selectedDevice: MicrophoneDevice? {
+        guard let selectedUID else { return nil }
+        return devices.first { $0.uid == selectedUID }
+    }
+
+    var selectionUnavailable: Bool {
+        selectedUID != nil && selectedDevice == nil
+    }
+
+    var recordingDevice: MicrophoneDevice? {
+        if selectedUID != nil { return selectedDevice }
+        guard let id = Self.defaultInputDeviceID(),
+              Self.hasInputChannels(id),
+              let uid = Self.stringProperty(id, selector: kAudioDevicePropertyDeviceUID),
+              let name = Self.deviceName(for: id) else { return nil }
+        return MicrophoneDevice(id: id, uid: uid, name: name)
+    }
+
+    var selectedLabel: String {
+        if let selectedDevice { return selectedDevice.name }
+        if let selectedUID { return "Unavailable (\(selectedUID))" }
+        return "System Default — \(systemDefaultName)"
+    }
+
+    var systemDefaultName: String {
+        guard let deviceID = Self.defaultInputDeviceID() else { return "Unavailable" }
+        return devices.first { $0.id == deviceID }?.name
+            ?? Self.deviceName(for: deviceID)
+            ?? "Unavailable"
+    }
+
+    func refresh() {
+        devices = Self.enumerateInputDevices()
+    }
+
+    func select(uid: String?) {
+        if let uid {
+            UserDefaults.standard.set(uid, forKey: selectedUIDKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: selectedUIDKey)
         }
+    }
 
-        let id = UUID()
-        activeID = id
-        latestTranscript = ""
-        recognitionError = nil
-        recognitionFinished = false
-        let audioRequest = SFSpeechAudioBufferRecognitionRequest()
-        request = audioRequest
-        audioRequest.shouldReportPartialResults = true
-        audioRequest.taskHint = .dictation
-        audioRequest.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
+    private static func enumerateInputDevices() -> [MicrophoneDevice] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &dataSize
+        ) == noErr else { return [] }
 
-        recognitionTask = recognizer.recognitionTask(with: audioRequest) { [weak self] result, error in
-            DispatchQueue.main.async {
-                self?.handle(result: result, error: error, id: id)
-            }
+        let count = Int(dataSize) / MemoryLayout<AudioDeviceID>.stride
+        guard count > 0 else { return [] }
+        var deviceIDs = [AudioDeviceID](repeating: 0, count: count)
+        let status = deviceIDs.withUnsafeMutableBufferPointer { buffer -> OSStatus in
+            guard let baseAddress = buffer.baseAddress else { return -1 }
+            return AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                0,
+                nil,
+                &dataSize,
+                baseAddress
+            )
         }
+        guard status == noErr else { return [] }
 
-        let inputNode = audioEngine.inputNode
-        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputNode.inputFormat(forBus: 0)) { buffer, _ in
-            audioRequest.append(buffer)
+        return deviceIDs.compactMap { deviceID in
+            guard hasInputChannels(deviceID),
+                  let uid = stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID),
+                  let name = deviceName(for: deviceID) else { return nil }
+            return MicrophoneDevice(id: deviceID, uid: uid, name: name)
+        }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private static func hasInputChannels(_ deviceID: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &dataSize) == noErr,
+              dataSize > 0 else { return false }
+
+        let rawBuffer = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(dataSize),
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { rawBuffer.deallocate() }
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, rawBuffer) == noErr else {
+            return false
         }
+        let bufferList = UnsafeMutableAudioBufferListPointer(
+            rawBuffer.assumingMemoryBound(to: AudioBufferList.self)
+        )
+        return bufferList.contains { $0.mNumberChannels > 0 }
+    }
+
+    private static func stringProperty(_ deviceID: AudioDeviceID, selector: AudioObjectPropertySelector) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: Unmanaged<CFString>?
+        var dataSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let status = withUnsafeMutablePointer(to: &value) { pointer in
+            AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, pointer)
+        }
+        guard status == noErr, let value else { return nil }
+        return value.takeUnretainedValue() as String
+    }
+
+    private static func deviceName(for deviceID: AudioDeviceID) -> String? {
+        stringProperty(deviceID, selector: kAudioObjectPropertyName)
+    }
+
+    private static func defaultInputDeviceID() -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var deviceID: AudioDeviceID = kAudioObjectUnknown
+        var dataSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = withUnsafeMutablePointer(to: &deviceID) { pointer in
+            AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize, pointer)
+        }
+        guard status == noErr, deviceID != kAudioObjectUnknown else { return nil }
+        return deviceID
+    }
+}
+
+private enum LocalModelState: Equatable {
+    case missing
+    case downloading(Int)
+    case loading
+    case ready
+    case failed(String)
+}
+
+@MainActor
+private final class LocalTranscriber {
+    private(set) var state: LocalModelState = .missing
+    private var manager: AsrManager?
+    var onStateChange: (() -> Void)?
+
+    var isDownloaded: Bool {
+        AsrModels.modelsExist(
+            at: AsrModels.defaultCacheDirectory(for: .v2),
+            version: .v2
+        )
+    }
+
+    func loadCachedModel() async {
+        guard isDownloaded else {
+            setState(.missing)
+            return
+        }
+        await prepare(download: false)
+    }
+
+    func downloadModel() async {
+        await prepare(download: true)
+    }
+
+    func transcribe(_ url: URL) async throws -> String {
+        guard let manager else { throw BetterVoiceError.localModelUnavailable }
+        var decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+        return try await manager.transcribe(url, decoderState: &decoderState).text
+    }
+
+    private func prepare(download: Bool) async {
+        guard state != .loading, !isDownloading else { return }
+        setState(download ? .downloading(0) : .loading)
         do {
-            audioEngine.prepare()
-            try audioEngine.start()
+            let progress: ProgressHandler?
+            if download {
+                progress = { [weak self] update in
+                    Task { @MainActor in
+                        self?.setState(.downloading(Int(update.fractionCompleted * 100)))
+                    }
+                }
+            } else {
+                progress = nil
+            }
+            let models = download
+                ? try await AsrModels.downloadAndLoad(version: .v2, progressHandler: progress)
+                : try await AsrModels.loadFromCache(version: .v2)
+            manager = AsrManager(config: .default, models: models)
+            setState(.ready)
+        } catch {
+            manager = nil
+            setState(.failed(error.localizedDescription))
+        }
+    }
+
+    private var isDownloading: Bool {
+        if case .downloading = state { return true }
+        return false
+    }
+
+    private func setState(_ value: LocalModelState) {
+        state = value
+        onStateChange?()
+    }
+}
+
+@MainActor
+private final class AudioRecorder {
+    private var engine: AVAudioEngine?
+    private var audioFile: AVAudioFile?
+    private var recordingURL: URL?
+    var onLevel: ((Float) -> Void)?
+
+    func start(device: MicrophoneDevice) throws {
+        precondition(engine == nil)
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        guard let audioUnit = inputNode.audioUnit else {
+            throw BetterVoiceError.microphoneRoutingFailed(device.name, -1)
+        }
+
+        var deviceID = device.id
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &deviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        guard status == noErr else {
+            throw BetterVoiceError.microphoneRoutingFailed(device.name, status)
+        }
+
+        let format = inputNode.inputFormat(forBus: 0)
+        guard format.channelCount > 0 else { throw BetterVoiceError.microphoneUnavailable }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BetterVoice-(UUID().uuidString).caf")
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let levelHandler = onLevel
+
+        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, _ in
+            try? file.write(from: buffer)
+            guard let samples = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return }
+            var sum: Float = 0
+            for index in 0..<Int(buffer.frameLength) {
+                sum += samples[index] * samples[index]
+            }
+            let level = min(1, sqrt(sum / Float(buffer.frameLength)) * 12)
+            DispatchQueue.main.async { levelHandler?(level) }
+        }
+
+        do {
+            engine.prepare()
+            try engine.start()
+            self.engine = engine
+            audioFile = file
+            recordingURL = url
         } catch {
             inputNode.removeTap(onBus: 0)
-            audioEngine.stop()
-            recognitionTask?.cancel()
-            recognitionTask = nil
-            self.request = nil
-            recognitionError = nil
-            recognitionFinished = false
-            activeID = nil
+            try? FileManager.default.removeItem(at: url)
             throw error
         }
     }
 
-    func stop(completion: @escaping (Result<String, Error>) -> Void) {
-        guard let id = activeID else {
-            completion(recognitionResult())
-            return
-        }
-        pendingFinish = (id, completion)
-        request?.endAudio()
-        audioEngine.inputNode.removeTap(onBus: 0)
-        audioEngine.stop()
-        recognitionTask?.finish()
-
-        if recognitionFinished {
-            finishIfNeeded(id: id)
-            return
-        }
-
-        let timeout = latestTranscript.isEmpty ? coldFinalizationTimeout : partialFinalizationTimeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
-            self?.finishIfNeeded(id: id)
-        }
-    }
-
-    private func handle(result: SFSpeechRecognitionResult?, error: Error?, id: UUID) {
-        guard activeID == id else { return }
-        if let result {
-            latestTranscript = result.bestTranscription.formattedString
-            onTranscript?(latestTranscript)
-            if result.isFinal { recognitionFinished = true }
-        }
-        if let error {
-            recognitionError = error
-            recognitionFinished = true
-        }
-        if recognitionFinished {
-            finishIfNeeded(id: id)
-        }
-    }
-
-    private func finishIfNeeded(id: UUID) {
-        guard activeID == id, let pendingFinish, pendingFinish.id == id else { return }
-        self.pendingFinish = nil
-        activeID = nil
-        recognitionTask?.cancel()
-        recognitionTask = nil
-        request = nil
-        let result = recognitionResult()
-        recognitionError = nil
-        recognitionFinished = false
-        onTranscript = nil
-        pendingFinish.completion(result)
-    }
-
-    private func recognitionResult() -> Result<String, Error> {
-        if let recognitionError { return .failure(recognitionError) }
-        return .success(latestTranscript)
+    func stop() throws -> URL {
+        guard let engine, let recordingURL else { throw BetterVoiceError.sessionUnavailable }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        self.engine = nil
+        audioFile = nil
+        self.recordingURL = nil
+        return recordingURL
     }
 }
 
@@ -216,7 +405,7 @@ private struct TrailConfirmation {
 
 @MainActor
 private final class TrailOverlayView: NSView {
-    private let trailLifetime: TimeInterval = 1.2
+    private let trailLifetime: TimeInterval = 0.55
     private let confirmationLifetime: TimeInterval = 0.55
     private var trail: [TrailPoint] = []
     private var confirmations: [TrailConfirmation] = []
@@ -251,26 +440,43 @@ private final class TrailOverlayView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.clear(bounds)
         let now = ProcessInfo.processInfo.systemUptime
 
         context.setLineCap(.round)
-        for index in trailSegmentRange(pointCount: trail.count) {
-            let previous = trail[index - 1]
-            let current = trail[index]
+        let segments = trailSegments(
+            points: trail.map(\.point),
+            times: trail.map(\.time)
+        )
+        for segment in segments {
+            let previous = trail[segment.from]
+            let current = trail[segment.to]
             let age = max(0, now - current.time)
             let fade = max(0, 1 - age / trailLifetime)
             guard fade > 0 else { continue }
             context.move(to: localPoint(previous.point))
             context.addLine(to: localPoint(current.point))
-            context.setStrokeColor(NSColor.systemBlue.withAlphaComponent(0.18 * fade).cgColor)
-            context.setLineWidth(11)
+            context.setStrokeColor(NSColor.systemCyan.withAlphaComponent(0.2 * fade).cgColor)
+            context.setLineWidth(9)
             context.strokePath()
 
             context.move(to: localPoint(previous.point))
             context.addLine(to: localPoint(current.point))
-            context.setStrokeColor(NSColor.systemBlue.withAlphaComponent(0.96 * fade).cgColor)
-            context.setLineWidth(4)
+            context.setStrokeColor(NSColor.systemBlue.withAlphaComponent(0.92 * fade).cgColor)
+            context.setLineWidth(3.5)
             context.strokePath()
+        }
+
+        if let head = trail.last {
+            let age = max(0, now - head.time)
+            let fade = max(0, 1 - age / trailLifetime)
+            if fade > 0 {
+                let center = localPoint(head.point)
+                context.setFillColor(NSColor.systemBlue.withAlphaComponent(0.24 * fade).cgColor)
+                context.fillEllipse(in: CGRect(x: center.x - 9, y: center.y - 9, width: 18, height: 18))
+                context.setFillColor(NSColor.systemCyan.withAlphaComponent(0.98 * fade).cgColor)
+                context.fillEllipse(in: CGRect(x: center.x - 4, y: center.y - 4, width: 8, height: 8))
+            }
         }
 
         for confirmation in confirmations {
@@ -373,6 +579,123 @@ private final class TrailOverlayController {
 }
 
 @MainActor
+private final class RecordingHUDView: NSView {
+    var microphone = ""
+    var level: Float = 0
+    var contextCount = 0
+    var isFinishing = false
+    var reduceMotion = false
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor(calibratedWhite: 0.07, alpha: 0.96).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 18, yRadius: 18).fill()
+
+        let phase = reduceMotion ? 0 : Int(ProcessInfo.processInfo.systemUptime * 10)
+        let shape: [CGFloat] = [0.45, 0.75, 1, 0.7, 0.4]
+        for index in shape.indices {
+            let pulse = CGFloat((phase + index) % 5) * 0.35
+            let height = 7 + shape[index] * CGFloat(level) * 20 + pulse
+            let rect = NSRect(x: 18 + CGFloat(index) * 7, y: 28 - height / 2, width: 3.5, height: height)
+            NSColor.systemBlue.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2).fill()
+        }
+
+        let title = isFinishing ? "Transcribing…" : "Listening"
+        let detail = contextCount > 0 ? "(microphone)  •  (contextCount) captured" : microphone
+        (title as NSString).draw(
+            at: NSPoint(x: 62, y: 10),
+            withAttributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                .foregroundColor: NSColor.white
+            ]
+        )
+        (detail as NSString).draw(
+            at: NSPoint(x: 62, y: 30),
+            withAttributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: NSColor(calibratedWhite: 0.72, alpha: 1)
+            ]
+        )
+    }
+}
+
+@MainActor
+private final class RecordingHUDController {
+    private let view = RecordingHUDView(frame: NSRect(x: 0, y: 0, width: 290, height: 56))
+    private var panel: NSPanel?
+    private var timer: Timer?
+
+    func show(microphone: String) {
+        hide()
+        view.microphone = microphone
+        view.level = 0
+        view.contextCount = 0
+        view.isFinishing = false
+        view.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        view.setAccessibilityElement(true)
+        view.setAccessibilityLabel("BetterVoice listening on (microphone)")
+
+        let pointer = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(pointer, $0.frame, false) } ?? NSScreen.main
+        guard let frame = screen?.visibleFrame else { return }
+        let panelFrame = NSRect(
+            x: frame.midX - view.frame.width / 2,
+            y: frame.minY + 24,
+            width: view.frame.width,
+            height: view.frame.height
+        )
+        let panel = NSPanel(
+            contentRect: panelFrame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.level = .statusBar
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        panel.contentView = view
+        self.panel = panel
+        panel.orderFrontRegardless()
+
+        guard !view.reduceMotion else { return }
+        let timer = Timer(timeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async { self?.view.needsDisplay = true }
+        }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func update(level: Float) {
+        view.level = max(level, view.level * 0.78)
+        view.needsDisplay = true
+    }
+
+    func setContextCount(_ count: Int) {
+        view.contextCount = count
+        view.needsDisplay = true
+    }
+
+    func showFinishing() {
+        view.isFinishing = true
+        view.level = 0.2
+        view.setAccessibilityLabel("BetterVoice transcribing")
+        view.needsDisplay = true
+    }
+
+    func hide() {
+        timer?.invalidate()
+        timer = nil
+        panel?.orderOut(nil)
+        panel = nil
+    }
+}
+
+@MainActor
 private final class SessionOutput {
     let folder: URL
     private(set) var images: [URL] = []
@@ -405,32 +728,23 @@ private final class SessionOutput {
         }
         let markdownURL = folder.appendingPathComponent("context.md")
         try markdown.write(to: markdownURL, atomically: true, encoding: .utf8)
-        let paths = images.enumerated().map { "Context \($0.offset + 1): \($0.element.path)" }.joined(separator: "\n")
-        var clipboardSections: [String] = []
-        if !trimmed.isEmpty { clipboardSections.append(trimmed) }
-        if !images.isEmpty { clipboardSections.append("Screen context:\n\(paths)") }
-        let clipboardText = clipboardSections.joined(separator: "\n\n")
-        let clipboardCopied = Clipboard.copy(transcript: trimmed, images: images, text: clipboardText)
-        print(clipboardText)
+        let clipboardCopied = Clipboard.copy(transcript: trimmed, images: images)
+        print(trimmed)
         return (markdownURL, clipboardCopied)
     }
 }
 
 @MainActor
 private enum Clipboard {
-    static func copy(transcript: String, images: [URL], text: String) -> Bool {
+    static func copy(transcript: String, images: [URL]) -> Bool {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
 
-        let item = NSPasteboardItem()
-        guard item.setString(text, forType: .string) else { return false }
-        guard !images.isEmpty else { return pasteboard.writeObjects([item]) }
-
+        let textItem = NSPasteboardItem()
         let rich = NSMutableAttributedString(string: transcript + (images.isEmpty ? "" : "\n\n"))
         var imageItems: [NSPasteboardItem] = []
         for (index, imageURL) in images.enumerated() {
             guard let data = try? Data(contentsOf: imageURL), let image = NSImage(data: data) else {
-                _ = pasteboard.writeObjects([item])
                 return false
             }
             let attachment = NSTextAttachment()
@@ -439,27 +753,23 @@ private enum Clipboard {
             rich.append(NSAttributedString(string: "\nContext \(index + 1)\n\n"))
 
             let imageItem = NSPasteboardItem()
-            guard imageItem.setData(data, forType: .png),
-                  imageItem.setString(imageURL.absoluteString, forType: .fileURL) else {
-                _ = pasteboard.writeObjects([item])
-                return false
-            }
+            guard imageItem.setData(data, forType: .png) else { return false }
+            if let tiff = image.tiffRepresentation { imageItem.setData(tiff, forType: .tiff) }
             imageItems.append(imageItem)
         }
 
-        guard let rtf = try? rich.data(
-            from: NSRange(location: 0, length: rich.length),
-            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
-        ), item.setData(rtf, forType: .rtf) else {
-            _ = pasteboard.writeObjects([item])
-            return false
+        var objects: [NSPasteboardWriting] = imageItems
+        if !transcript.isEmpty {
+            guard textItem.setString(transcript, forType: .string) else { return false }
+            if let rtf = try? rich.data(
+                from: NSRange(location: 0, length: rich.length),
+                documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+            ) {
+                textItem.setData(rtf, forType: .rtf)
+            }
+            objects.insert(textItem, at: 0)
         }
-        let objects: [NSPasteboardWriting] = [item] + imageItems
-        guard pasteboard.writeObjects(objects) else {
-            _ = pasteboard.writeObjects([item])
-            return false
-        }
-        return true
+        return !objects.isEmpty && pasteboard.writeObjects(objects)
     }
 }
 
@@ -539,10 +849,13 @@ private enum StatusIconState {
 }
 
 @MainActor
-private final class AppController: NSObject, NSApplicationDelegate {
+private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    private let speech = SpeechRecorder()
+    private let microphones = MicrophoneManager()
+    private let recorder = AudioRecorder()
+    private let transcriber = LocalTranscriber()
     private let trailOverlay = TrailOverlayController()
+    private let recordingHUD = RecordingHUDController()
     private var inputMonitor: InputMonitor?
     private var detector = CircleGestureDetector()
     private var output: SessionOutput?
@@ -550,17 +863,20 @@ private final class AppController: NSObject, NSApplicationDelegate {
     private var state = SessionState.idle
     private var statusMenuItem: NSMenuItem?
     private var recordingMenuItem: NSMenuItem?
+    private var modelMenuItem: NSMenuItem?
+    private var microphoneMenu: NSMenu?
     private var statusAnimationTimer: Timer?
     private var statusFeedbackTimer: Timer?
     private var statusPulse = false
     private var reduceMotion = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        microphones.refresh()
         reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         setStatusIcon(.idle)
         statusItem.button?.imagePosition = .imageOnly
         statusItem.button?.imageScaling = .scaleProportionallyDown
-        statusItem.button?.toolTip = "BetterVoice — hold ⌘⌥ to record"
+        statusItem.button?.toolTip = "BetterVoice — hold ⌘⌥ to record • Microphone: \(microphones.selectedLabel)"
 
         let menu = NSMenu()
         let statusMenuItem = NSMenuItem(title: "Ready • hold ⌘⌥ to record", action: nil, keyEquivalent: "")
@@ -573,11 +889,29 @@ private final class AppController: NSObject, NSApplicationDelegate {
         recordingItem.target = self
         recordingMenuItem = recordingItem
         menu.addItem(recordingItem)
+
+        let modelItem = NSMenuItem(title: "Download Local Model (~500 MB)", action: #selector(downloadModel), keyEquivalent: "")
+        modelItem.target = self
+        modelMenuItem = modelItem
+        menu.addItem(modelItem)
+
+        let microphoneItem = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
+        let microphoneMenu = NSMenu()
+        microphoneItem.submenu = microphoneMenu
+        self.microphoneMenu = microphoneMenu
+        menu.addItem(microphoneItem)
         menu.addItem(NSMenuItem.separator())
         let quitItem = NSMenuItem(title: "Quit BetterVoice", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
+        menu.delegate = self
         statusItem.menu = menu
+        refreshMicrophoneMenu()
+        refreshModelMenu()
+
+        transcriber.onStateChange = { [weak self] in self?.refreshModelMenu() }
+        recorder.onLevel = { [weak self] level in self?.recordingHUD.update(level: level) }
+        Task { await transcriber.loadCachedModel() }
 
         inputMonitor = InputMonitor(
             toggle: { [weak self] in self?.toggleRecording() },
@@ -586,9 +920,100 @@ private final class AppController: NSObject, NSApplicationDelegate {
             }
         )
         inputMonitor?.start()
-        requestSpeechAuthorization()
         requestMicrophoneAuthorization()
         requestSystemPermissions()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        guard let statusMenu = statusItem.menu, menu === statusMenu else { return }
+        microphones.refresh()
+        refreshMicrophoneMenu()
+    }
+
+    private func refreshMicrophoneMenu() {
+        guard let microphoneMenu else { return }
+        microphoneMenu.removeAllItems()
+        let enabled = state == .idle
+
+        let systemDefault = NSMenuItem(
+            title: "System Default — \(microphones.systemDefaultName)",
+            action: #selector(selectMicrophone(_:)),
+            keyEquivalent: ""
+        )
+        systemDefault.target = self
+        systemDefault.state = microphones.selectedUID == nil ? .on : .off
+        systemDefault.isEnabled = enabled
+        microphoneMenu.addItem(systemDefault)
+
+        if !microphones.devices.isEmpty {
+            microphoneMenu.addItem(.separator())
+            for device in microphones.devices {
+                let item = NSMenuItem(title: device.name, action: #selector(selectMicrophone(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = device.uid
+                item.state = microphones.selectedUID == device.uid ? .on : .off
+                item.isEnabled = enabled
+                microphoneMenu.addItem(item)
+            }
+        } else {
+            let unavailable = NSMenuItem(title: "No input microphones found", action: nil, keyEquivalent: "")
+            unavailable.isEnabled = false
+            microphoneMenu.addItem(unavailable)
+        }
+
+        if microphones.selectionUnavailable {
+            let unavailable = NSMenuItem(title: "Selected microphone is unavailable", action: nil, keyEquivalent: "")
+            unavailable.isEnabled = false
+            microphoneMenu.addItem(.separator())
+            microphoneMenu.addItem(unavailable)
+        }
+    }
+
+    @objc private func selectMicrophone(_ sender: NSMenuItem) {
+        guard state == .idle else { return }
+        microphones.select(uid: sender.representedObject as? String)
+        refreshMicrophoneMenu()
+        showStatus("Microphone: \(microphones.selectedLabel)", resetAfter: 3)
+    }
+
+    private func refreshModelMenu() {
+        guard let modelMenuItem else { return }
+        switch transcriber.state {
+        case .missing:
+            modelMenuItem.title = "Download Local Model (~500 MB)"
+            modelMenuItem.isEnabled = state == .idle
+        case .downloading(let percent):
+            modelMenuItem.title = "Downloading Local Model… \(percent)%"
+            modelMenuItem.isEnabled = false
+        case .loading:
+            modelMenuItem.title = "Loading Local Model…"
+            modelMenuItem.isEnabled = false
+        case .ready:
+            modelMenuItem.title = "Local Parakeet Model Ready"
+            modelMenuItem.isEnabled = false
+        case .failed:
+            modelMenuItem.title = "Retry Local Model Download"
+            modelMenuItem.isEnabled = state == .idle
+        }
+        if state == .idle {
+            recordingMenuItem?.isEnabled = transcriber.state == .ready
+        }
+    }
+
+    @objc private func downloadModel() {
+        guard state == .idle else { return }
+        showStatus("Downloading local model…")
+        Task {
+            await transcriber.downloadModel()
+            switch transcriber.state {
+            case .ready:
+                showStatus("Local model ready • hold ⌘⌥ to record", resetAfter: 4)
+            case .failed(let message):
+                showError("Model download failed: \(message)")
+            default:
+                break
+            }
+        }
     }
 
     @objc private func toggleRecording() {
@@ -604,17 +1029,25 @@ private final class AppController: NSObject, NSApplicationDelegate {
 
     private func startRecording() {
         do {
+            guard transcriber.state == .ready else { throw BetterVoiceError.localModelUnavailable }
+            microphones.refresh()
+            guard !microphones.selectionUnavailable else {
+                throw BetterVoiceError.microphoneSelectionUnavailable(microphones.selectedLabel)
+            }
+            guard let selectedMicrophone = microphones.recordingDevice else {
+                throw BetterVoiceError.microphoneUnavailable
+            }
             output = try SessionOutput()
             detector.reset()
             transcript = ""
-            speech.onTranscript = { [weak self] value in
-                self?.transcript = value
-            }
-            try speech.start()
+            try recorder.start(device: selectedMicrophone)
             state = .recording
+            refreshMicrophoneMenu()
+            refreshModelMenu()
             trailOverlay.start()
+            recordingHUD.show(microphone: selectedMicrophone.name)
             setStatusIcon(.recording)
-            showStatus("Recording…")
+            showStatus("Recording • Microphone: \(selectedMicrophone.name)")
             updateMenuTitle("Stop recording (⌘⌥)", enabled: true)
         } catch {
             output = nil
@@ -625,23 +1058,29 @@ private final class AppController: NSObject, NSApplicationDelegate {
     private func stopRecording() {
         guard state == .recording else { return }
         state = .finishing
+        refreshMicrophoneMenu()
         trailOverlay.stop()
+        recordingHUD.showFinishing()
         setStatusIcon(.finishing)
         showStatus("Finishing…")
         updateMenuTitle("Finishing… (⌘⌥)", enabled: false)
-        speech.stop { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success(let finalTranscript):
-                if !finalTranscript.isEmpty { self.transcript = finalTranscript }
-                self.finishSession()
-            case .failure(let error):
-                self.finishSession(speechError: error)
+        do {
+            let audioURL = try recorder.stop()
+            Task {
+                defer { try? FileManager.default.removeItem(at: audioURL) }
+                do {
+                    transcript = try await transcriber.transcribe(audioURL)
+                    finishSession()
+                } catch {
+                    finishSession(transcriptionError: error)
+                }
             }
+        } catch {
+            finishSession(transcriptionError: error)
         }
     }
 
-    private func finishSession(speechError: Error? = nil) {
+    private func finishSession(transcriptionError: Error? = nil) {
         let session = output
         let hadTranscript = !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         do {
@@ -650,14 +1089,17 @@ private final class AppController: NSObject, NSApplicationDelegate {
             let hasContext = !session.images.isEmpty
             output = nil
             state = .idle
+            recordingHUD.hide()
+            refreshMicrophoneMenu()
+            refreshModelMenu()
             setStatusIcon(.idle)
             updateMenuTitle("Start recording (⌘⌥)", enabled: true)
 
-            if let speechError {
+            if let transcriptionError {
                 let delivery = result.clipboardCopied
                     ? (hasContext ? "Screen context copied." : "Session saved.")
                     : "Session saved; clipboard text fallback used."
-                showError("Speech recognition failed: \(speechError.localizedDescription) \(delivery)")
+                showError("Transcription failed: \(transcriptionError.localizedDescription) \(delivery)")
             } else if result.clipboardCopied {
                 if hadTranscript && hasContext {
                     showStatus("Copied transcript + context", resetAfter: 4)
@@ -674,10 +1116,13 @@ private final class AppController: NSObject, NSApplicationDelegate {
         } catch {
             output = nil
             state = .idle
+            recordingHUD.hide()
+            refreshMicrophoneMenu()
+            refreshModelMenu()
             setStatusIcon(.idle)
             updateMenuTitle("Start recording (⌘⌥)", enabled: true)
-            if let speechError {
-                showError("Speech recognition failed: \(speechError.localizedDescription); session save failed: \(error.localizedDescription)")
+            if let transcriptionError {
+                showError("Transcription failed: \(transcriptionError.localizedDescription); session save failed: \(error.localizedDescription)")
             } else {
                 showError(error.localizedDescription)
             }
@@ -695,6 +1140,7 @@ private final class AppController: NSObject, NSApplicationDelegate {
         do {
             guard let output else { return }
             _ = try output.addImage(for: gesture)
+            recordingHUD.setContextCount(output.images.count)
             showStatus("Recording • \(output.images.count) screen context")
         } catch {
             showError(error.localizedDescription)
@@ -707,14 +1153,6 @@ private final class AppController: NSObject, NSApplicationDelegate {
             x: quartzPoint.x + primaryFrame.minX,
             y: primaryFrame.maxY - quartzPoint.y
         )
-    }
-
-    private func requestSpeechAuthorization() {
-        SFSpeechRecognizer.requestAuthorization { status in
-            if status != .authorized {
-                DispatchQueue.main.async { self.showError("Allow Speech Recognition in System Settings to transcribe speech.") }
-            }
-        }
     }
 
     private func requestMicrophoneAuthorization() {
@@ -748,7 +1186,7 @@ private final class AppController: NSObject, NSApplicationDelegate {
 
     private func updateMenuTitle(_ title: String, enabled: Bool) {
         recordingMenuItem?.title = title
-        recordingMenuItem?.isEnabled = enabled
+        recordingMenuItem?.isEnabled = enabled && (state != .idle || transcriber.state == .ready)
     }
 
     private func showStatus(_ message: String, resetAfter: TimeInterval? = nil) {
@@ -805,6 +1243,7 @@ private final class AppController: NSObject, NSApplicationDelegate {
     @objc private func quit() {
         inputMonitor?.stop()
         trailOverlay.stop()
+        recordingHUD.hide()
         statusAnimationTimer?.invalidate()
         statusFeedbackTimer?.invalidate()
         NSApplication.shared.terminate(nil)
