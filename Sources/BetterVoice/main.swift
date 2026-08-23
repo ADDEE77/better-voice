@@ -905,7 +905,8 @@ private enum Clipboard {
             imageItems.append(imageItem)
         }
 
-        var objects: [NSPasteboardWriting] = imageItems
+        // Codex attaches separate pasteboard images last-in-first-out.
+        var objects: [NSPasteboardWriting] = imageItems.reversed()
         if !transcript.isEmpty {
             guard textItem.setString(transcript, forType: .string) else { return false }
             if let rtf = try? rich.data(
