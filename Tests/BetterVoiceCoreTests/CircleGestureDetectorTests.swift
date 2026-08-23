@@ -11,8 +11,8 @@ final class CircleGestureDetectorTests: XCTestCase {
         )
         XCTAssertEqual(
             trailSegments(
-                points: [CGPoint(x: 0, y: 0), CGPoint(x: 4, y: 3)],
-                times: [0, 0.016]
+                points: [CGPoint(x: 0, y: 0), CGPoint(x: 30, y: 0)],
+                times: [0, 0.15]
             ),
             [TrailSegment(from: 0, to: 1)]
         )
@@ -50,6 +50,53 @@ final class CircleGestureDetectorTests: XCTestCase {
         XCTAssertEqual(result?.radius ?? 0, 52, accuracy: 3)
     }
 
+    func testRecognizesSlowLooseLoop() {
+        var detector = CircleGestureDetector()
+        var result: CircleGesture?
+        let center = CGPoint(x: 900, y: 500)
+
+        for index in 0..<150 {
+            let angle = CGFloat(index) / 149 * 2 * .pi
+            let wobble = 1 + 0.1 * sin(angle * 3)
+            result = detector.add(
+                point: CGPoint(
+                    x: center.x + 110 * wobble * cos(angle),
+                    y: center.y + 82 * wobble * sin(angle)
+                ),
+                at: Double(index) * 0.02
+            ) ?? result
+        }
+
+        XCTAssertNotNil(result)
+    }
+
+    func testRecognizesSlowLooseLoopAfterPointerMovement() {
+        var detector = CircleGestureDetector()
+        var result: CircleGesture?
+
+        for index in 0..<60 {
+            _ = detector.add(
+                point: CGPoint(x: 300 + CGFloat(index) * 5, y: 240 + CGFloat(index % 7)),
+                at: Double(index) * 0.02
+            )
+        }
+
+        let center = CGPoint(x: 900, y: 500)
+        for index in 0..<150 {
+            let angle = CGFloat(index) / 149 * 2 * .pi
+            let wobble = 1 + 0.1 * sin(angle * 3)
+            result = detector.add(
+                point: CGPoint(
+                    x: center.x + 110 * wobble * cos(angle),
+                    y: center.y + 82 * wobble * sin(angle)
+                ),
+                at: 1.2 + Double(index) * 0.02
+            ) ?? result
+        }
+
+        XCTAssertNotNil(result)
+    }
+
     func testRejectsStraightLine() {
         var detector = CircleGestureDetector()
         var result: CircleGesture?
@@ -62,5 +109,23 @@ final class CircleGestureDetectorTests: XCTestCase {
         }
 
         XCTAssertNil(result)
+    }
+
+    func testLongContinuousLoopCapturesOnceUntilPointerLeaves() {
+        var detector = CircleGestureDetector()
+        let center = CGPoint(x: 400, y: 300)
+        var captures = 0
+
+        for index in 0..<240 {
+            let angle = CGFloat(index) / 47 * 2 * .pi
+            if detector.add(
+                point: CGPoint(x: center.x + 70 * cos(angle), y: center.y + 70 * sin(angle)),
+                at: Double(index) / 60
+            ) != nil {
+                captures += 1
+            }
+        }
+
+        XCTAssertEqual(captures, 1)
     }
 }

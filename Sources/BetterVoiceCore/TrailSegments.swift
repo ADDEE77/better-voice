@@ -15,8 +15,8 @@ public struct TrailSegment: Equatable {
 public func trailSegments(
     points: [CGPoint],
     times: [TimeInterval],
-    maximumGap: TimeInterval = 0.10,
-    maximumDistance: CGFloat = 120
+    maximumGap: TimeInterval = 0.18,
+    maximumDistance: CGFloat = 160
 ) -> [TrailSegment] {
     guard points.count == times.count, points.count > 1 else { return [] }
 

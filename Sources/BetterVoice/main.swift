@@ -4,6 +4,7 @@ import AudioToolbox
 import AVFoundation
 import CoreAudio
 import CoreGraphics
+import ScreenCaptureKit
 import BetterVoiceCore
 import FluidAudio
 
@@ -13,6 +14,7 @@ private enum BetterVoiceError: LocalizedError {
     case microphoneRoutingFailed(String, OSStatus)
     case localModelUnavailable
     case sessionUnavailable
+    case screenPermissionRequired
     case screenshotUnavailable
 
     var errorDescription: String? {
@@ -22,7 +24,8 @@ private enum BetterVoiceError: LocalizedError {
         case .microphoneRoutingFailed(let name, let status): return "Could not route audio from \(name) (AudioUnit error \(status))."
         case .localModelUnavailable: return "Download the Local Parakeet model from the BetterVoice menu first."
         case .sessionUnavailable: return "The recording session is no longer available."
-        case .screenshotUnavailable: return "The screen could not be captured. Enable Screen Recording for BetterVoice."
+        case .screenPermissionRequired: return "Enable Screen Recording for BetterVoice."
+        case .screenshotUnavailable: return "The selected screen area could not be captured."
         }
     }
 }
@@ -329,24 +332,62 @@ private final class AudioRecorder {
 
 @MainActor
 private final class ScreenshotCapture {
-    static func capture(gesture: CircleGesture, to url: URL) throws {
-        let side = max(180, min(720, gesture.radius * 3.2))
-        let region = CGRect(
-            x: gesture.center.x - side / 2,
-            y: gesture.center.y - side / 2,
-            width: side,
-            height: side
-        )
-        guard let image = CGWindowListCreateImage(
-            region,
-            .optionOnScreenOnly,
-            kCGNullWindowID,
-            [.bestResolution, .boundsIgnoreFraming]
-        ) else {
+    static func capture(gesture: CircleGesture, to url: URL) async throws {
+        guard CGPreflightScreenCaptureAccess() else {
+            throw BetterVoiceError.screenPermissionRequired
+        }
+        guard let displayRegion = displayBounds(containing: gesture.center) else {
             throw BetterVoiceError.screenshotUnavailable
         }
 
-        let marked = try mark(image, target: gesture.center, region: region, radius: gesture.radius)
+        let image: CGImage
+        let region: CGRect
+        if #available(macOS 15.2, *) {
+            region = displayRegion
+            do {
+                image = try await SCScreenshotManager.captureImage(in: region)
+            } catch {
+                throw captureError(error)
+            }
+        } else {
+            let content: SCShareableContent
+            do {
+                content = try await SCShareableContent.excludingDesktopWindows(
+                    false,
+                    onScreenWindowsOnly: true
+                )
+            } catch {
+                throw captureError(error)
+            }
+            guard let display = content.displays.first(where: { $0.frame.contains(gesture.center) }) else {
+                throw BetterVoiceError.screenshotUnavailable
+            }
+            region = display.frame
+
+            let ownApplication = content.applications.filter {
+                $0.bundleIdentifier == Bundle.main.bundleIdentifier
+            }
+            let filter = SCContentFilter(
+                display: display,
+                excludingApplications: ownApplication,
+                exceptingWindows: []
+            )
+            let configuration = SCStreamConfiguration()
+            configuration.sourceRect = region.offsetBy(dx: -display.frame.minX, dy: -display.frame.minY)
+            configuration.width = Int(region.width * CGFloat(display.width) / display.frame.width)
+            configuration.height = Int(region.height * CGFloat(display.height) / display.frame.height)
+            configuration.showsCursor = false
+            do {
+                image = try await SCScreenshotManager.captureImage(
+                contentFilter: filter,
+                configuration: configuration
+                )
+            } catch {
+                throw captureError(error)
+            }
+        }
+
+        let marked = try highlight(image, target: gesture.center, region: region, radius: gesture.radius)
         let representation = NSBitmapImageRep(cgImage: marked)
         guard let data = representation.representation(using: .png, properties: [:]) else {
             throw BetterVoiceError.screenshotUnavailable
@@ -354,7 +395,23 @@ private final class ScreenshotCapture {
         try data.write(to: url, options: .atomic)
     }
 
-    private static func mark(_ image: CGImage, target: CGPoint, region: CGRect, radius: CGFloat) throws -> CGImage {
+    private static func displayBounds(containing point: CGPoint) -> CGRect? {
+        var display = CGDirectDisplayID()
+        var count: UInt32 = 0
+        guard CGGetDisplaysWithPoint(point, 1, &display, &count) == .success, count == 1 else { return nil }
+        return CGDisplayBounds(display)
+    }
+
+    private static func captureError(_ error: Error) -> BetterVoiceError {
+        let error = error as NSError
+        if error.domain == SCStreamErrorDomain,
+           error.code == SCStreamError.Code.userDeclined.rawValue {
+            return .screenPermissionRequired
+        }
+        return .screenshotUnavailable
+    }
+
+    private static func highlight(_ image: CGImage, target: CGPoint, region: CGRect, radius: CGFloat) throws -> CGImage {
         let width = image.width
         let height = image.height
         let colorSpace = CGColorSpaceCreateDeviceRGB()
@@ -375,18 +432,31 @@ private final class ScreenshotCapture {
         let scaleY = CGFloat(height) / region.height
         let x = (target.x - region.minX) * scaleX
         let y = CGFloat(height) - (target.y - region.minY) * scaleY
-        let markedRadius = max(18, radius * min(scaleX, scaleY))
-        let marker = CGRect(x: x - markedRadius, y: y - markedRadius, width: markedRadius * 2, height: markedRadius * 2)
+        let markedRadius = max(24, radius * min(scaleX, scaleY))
+        let colors = [
+            NSColor.systemCyan.withAlphaComponent(0.18).cgColor,
+            NSColor.systemBlue.withAlphaComponent(0.12).cgColor,
+            NSColor.systemBlue.withAlphaComponent(0).cgColor
+        ] as CFArray
+        if let gradient = CGGradient(
+            colorsSpace: colorSpace,
+            colors: colors,
+            locations: [0, 0.68, 1]
+        ) {
+            context.drawRadialGradient(
+                gradient,
+                startCenter: CGPoint(x: x, y: y),
+                startRadius: 0,
+                endCenter: CGPoint(x: x, y: y),
+                endRadius: markedRadius * 1.35,
+                options: [.drawsAfterEndLocation]
+            )
+        }
 
-        context.setStrokeColor(NSColor.systemRed.withAlphaComponent(0.95).cgColor)
-        context.setLineWidth(max(4, markedRadius * 0.08))
+        let marker = CGRect(x: x - markedRadius, y: y - markedRadius, width: markedRadius * 2, height: markedRadius * 2)
+        context.setStrokeColor(NSColor.systemBlue.withAlphaComponent(0.9).cgColor)
+        context.setLineWidth(max(4, markedRadius * 0.055))
         context.strokeEllipse(in: marker)
-        context.setLineWidth(max(2, markedRadius * 0.04))
-        context.move(to: CGPoint(x: x - markedRadius * 1.25, y: y))
-        context.addLine(to: CGPoint(x: x + markedRadius * 1.25, y: y))
-        context.move(to: CGPoint(x: x, y: y - markedRadius * 1.25))
-        context.addLine(to: CGPoint(x: x, y: y + markedRadius * 1.25))
-        context.strokePath()
         return context.makeImage() ?? image
     }
 }
@@ -404,12 +474,13 @@ private struct TrailConfirmation {
 
 @MainActor
 private final class TrailOverlayView: NSView {
-    private let trailLifetime: TimeInterval = 0.55
-    private let confirmationLifetime: TimeInterval = 0.55
+    private let trailLifetime: TimeInterval = 0.9
+    private let confirmationLifetime: TimeInterval = 1.1
     private var trail: [TrailPoint] = []
     private var confirmations: [TrailConfirmation] = []
     private var globalOrigin = CGPoint.zero
     var reduceMotion = false
+    override var isOpaque: Bool { false }
 
     func setGlobalOrigin(_ origin: CGPoint) {
         globalOrigin = origin
@@ -439,7 +510,7 @@ private final class TrailOverlayView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
-        context.clear(bounds)
+        context.clear(dirtyRect)
         let now = ProcessInfo.processInfo.systemUptime
 
         context.setLineCap(.round)
@@ -455,14 +526,14 @@ private final class TrailOverlayView: NSView {
             guard fade > 0 else { continue }
             context.move(to: localPoint(previous.point))
             context.addLine(to: localPoint(current.point))
-            context.setStrokeColor(NSColor.systemCyan.withAlphaComponent(0.2 * fade).cgColor)
-            context.setLineWidth(9)
+            context.setStrokeColor(NSColor.systemCyan.withAlphaComponent(0.28 * fade).cgColor)
+            context.setLineWidth(12)
             context.strokePath()
 
             context.move(to: localPoint(previous.point))
             context.addLine(to: localPoint(current.point))
             context.setStrokeColor(NSColor.systemBlue.withAlphaComponent(0.92 * fade).cgColor)
-            context.setLineWidth(3.5)
+            context.setLineWidth(4.5)
             context.strokePath()
         }
 
@@ -487,10 +558,10 @@ private final class TrailOverlayView: NSView {
             let radius = confirmation.radius * scale
             let center = localPoint(confirmation.center)
             let rect = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
-            context.setFillColor(NSColor.systemBlue.withAlphaComponent(alpha * 0.12).cgColor)
+            context.setFillColor(NSColor.systemBlue.withAlphaComponent(alpha * 0.2).cgColor)
             context.fillEllipse(in: rect)
             context.setStrokeColor(NSColor.systemBlue.withAlphaComponent(alpha).cgColor)
-            context.setLineWidth(4)
+            context.setLineWidth(6)
             context.strokeEllipse(in: rect)
         }
     }
@@ -506,46 +577,50 @@ private final class TrailOverlayView: NSView {
 }
 
 @MainActor
-private final class TrailOverlayWindow: NSWindow {
+private final class TrailOverlayWindow: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }
 
 @MainActor
 private final class TrailOverlayController {
-    private let view = TrailOverlayView(frame: .zero)
-    private var window: TrailOverlayWindow?
+    private var overlays: [(window: TrailOverlayWindow, view: TrailOverlayView)] = []
     private var timer: Timer?
 
     func start() {
         stop()
-        view.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
-        let frames = NSScreen.screens.map(\.frame)
-        guard var frame = frames.first else { return }
-        for screenFrame in frames.dropFirst() {
-            frame = frame.union(screenFrame)
+        for screen in NSScreen.screens {
+            let view = TrailOverlayView(frame: CGRect(origin: .zero, size: screen.frame.size))
+            view.reduceMotion = reduceMotion
+            view.setGlobalOrigin(screen.frame.origin)
+            view.wantsLayer = true
+            view.layerContentsRedrawPolicy = .onSetNeedsDisplay
+            view.layer?.backgroundColor = NSColor.clear.cgColor
+
+            let window = TrailOverlayWindow(
+                contentRect: screen.frame,
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered,
+                defer: false,
+                screen: screen
+            )
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.hasShadow = false
+            window.ignoresMouseEvents = true
+            window.level = .screenSaver
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+            window.sharingType = .none
+            window.animationBehavior = .none
+            window.isFloatingPanel = true
+            window.hidesOnDeactivate = false
+            window.contentView = view
+            overlays.append((window, view))
+            window.orderFrontRegardless()
+            window.display()
         }
-
-        let overlay = TrailOverlayWindow(
-            contentRect: frame,
-            styleMask: .borderless,
-            backing: .buffered,
-            defer: false
-        )
-        overlay.isOpaque = false
-        overlay.backgroundColor = .clear
-        overlay.hasShadow = false
-        overlay.ignoresMouseEvents = true
-        overlay.level = .screenSaver
-        overlay.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        overlay.sharingType = .none
-        overlay.animationBehavior = .none
-        view.setGlobalOrigin(frame.origin)
-        view.frame = CGRect(origin: .zero, size: frame.size)
-        overlay.contentView = view
-        window = overlay
-        overlay.orderFrontRegardless()
 
         let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
             DispatchQueue.main.async { [weak self] in self?.tick() }
@@ -557,23 +632,31 @@ private final class TrailOverlayController {
     func stop() {
         timer?.invalidate()
         timer = nil
-        view.reset()
-        window?.orderOut(nil)
-        window = nil
+        for overlay in overlays {
+            overlay.view.reset()
+            overlay.window.orderOut(nil)
+        }
+        overlays.removeAll(keepingCapacity: true)
     }
 
     func add(point: CGPoint, at time: TimeInterval) {
-        guard window != nil else { return }
-        view.add(point: point, at: time)
+        for overlay in overlays {
+            overlay.view.add(point: point, at: time)
+        }
     }
 
     func confirm(center: CGPoint, radius: CGFloat, at time: TimeInterval) {
-        guard window != nil else { return }
-        view.confirm(center: center, radius: radius, at: time)
+        for overlay in overlays {
+            overlay.view.confirm(center: center, radius: radius, at: time)
+        }
     }
 
     private func tick() {
-        view.tick(now: ProcessInfo.processInfo.systemUptime)
+        let now = ProcessInfo.processInfo.systemUptime
+        for overlay in overlays {
+            overlay.view.tick(now: now)
+            overlay.view.display()
+        }
     }
 }
 
@@ -583,6 +666,7 @@ private final class RecordingHUDView: NSView {
     var level: Float = 0
     var contextCount = 0
     var isFinishing = false
+    var captureMessage: String?
     var reduceMotion = false
 
     override var isFlipped: Bool { true }
@@ -597,12 +681,12 @@ private final class RecordingHUDView: NSView {
             let pulse = CGFloat((phase + index) % 5) * 0.35
             let height = 7 + shape[index] * CGFloat(level) * 20 + pulse
             let rect = NSRect(x: 18 + CGFloat(index) * 7, y: 28 - height / 2, width: 3.5, height: height)
-            NSColor.systemBlue.setFill()
+            (captureMessage == nil ? NSColor.systemBlue : NSColor.systemCyan).setFill()
             NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2).fill()
         }
 
-        let title = isFinishing ? "Transcribing…" : "Listening"
-        let detail = contextCount > 0 ? "(microphone)  •  (contextCount) captured" : microphone
+        let title = captureMessage ?? (isFinishing ? "Transcribing…" : "Listening")
+        let detail = contextCount > 0 ? "\(microphone)  •  \(contextCount) captured" : microphone
         (title as NSString).draw(
             at: NSPoint(x: 62, y: 10),
             withAttributes: [
@@ -625,6 +709,7 @@ private final class RecordingHUDController {
     private let view = RecordingHUDView(frame: NSRect(x: 0, y: 0, width: 290, height: 56))
     private var panel: NSPanel?
     private var timer: Timer?
+    private var captureTimer: Timer?
 
     func show(microphone: String) {
         hide()
@@ -632,9 +717,10 @@ private final class RecordingHUDController {
         view.level = 0
         view.contextCount = 0
         view.isFinishing = false
+        view.captureMessage = nil
         view.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         view.setAccessibilityElement(true)
-        view.setAccessibilityLabel("BetterVoice listening on (microphone)")
+        view.setAccessibilityLabel("BetterVoice listening on \(microphone)")
 
         let pointer = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(pointer, $0.frame, false) } ?? NSScreen.main
@@ -655,6 +741,7 @@ private final class RecordingHUDController {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.ignoresMouseEvents = true
+        panel.sharingType = .none
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.contentView = view
@@ -674,12 +761,32 @@ private final class RecordingHUDController {
         view.needsDisplay = true
     }
 
-    func setContextCount(_ count: Int) {
+    func confirmCapture(count: Int) {
         view.contextCount = count
+        view.captureMessage = "Screenshot captured"
+        view.setAccessibilityLabel("Screenshot \(count) captured")
+        view.needsDisplay = true
+        captureTimer?.invalidate()
+        let timer = Timer(timeInterval: 1.4, repeats: false) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.view.captureMessage = nil
+                self?.view.needsDisplay = true
+            }
+        }
+        captureTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func showCaptureError(_ message: String) {
+        view.captureMessage = message
+        view.setAccessibilityLabel(message)
         view.needsDisplay = true
     }
 
     func showFinishing() {
+        captureTimer?.invalidate()
+        captureTimer = nil
+        view.captureMessage = nil
         view.isFinishing = true
         view.level = 0.2
         view.setAccessibilityLabel("BetterVoice transcribing")
@@ -689,6 +796,8 @@ private final class RecordingHUDController {
     func hide() {
         timer?.invalidate()
         timer = nil
+        captureTimer?.invalidate()
+        captureTimer = nil
         panel?.orderOut(nil)
         panel = nil
     }
@@ -708,14 +817,17 @@ private final class SessionOutput {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     }
 
-    func addImage(for gesture: CircleGesture) throws -> URL {
+    func addImage(for gesture: CircleGesture) async throws -> URL {
         let url = folder.appendingPathComponent("context-\(images.count + 1).png")
-        try ScreenshotCapture.capture(gesture: gesture, to: url)
+        try await ScreenshotCapture.capture(gesture: gesture, to: url)
         images.append(url)
         return url
     }
 
-    func finish(transcript: String) throws -> (markdownURL: URL, clipboardCopied: Bool) {
+    func finish(
+        transcript: String,
+        target: AXUIElement?
+    ) throws -> (markdownURL: URL, clipboardCopied: Bool, transcriptInserted: Bool) {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         var markdown = "# BetterVoice session\n\n"
         markdown += trimmed.isEmpty ? "_No transcript captured._\n" : "\(trimmed)\n"
@@ -727,9 +839,10 @@ private final class SessionOutput {
         }
         let markdownURL = folder.appendingPathComponent("context.md")
         try markdown.write(to: markdownURL, atomically: true, encoding: .utf8)
+        let transcriptInserted = !images.isEmpty && TextInsertion.insert(trimmed, into: target)
         let clipboardCopied = Clipboard.copy(transcript: trimmed, images: images)
         print(trimmed)
-        return (markdownURL, clipboardCopied)
+        return (markdownURL, clipboardCopied, transcriptInserted)
     }
 }
 
@@ -754,6 +867,7 @@ private enum Clipboard {
             let imageItem = NSPasteboardItem()
             guard imageItem.setData(data, forType: .png) else { return false }
             if let tiff = image.tiffRepresentation { imageItem.setData(tiff, forType: .tiff) }
+            imageItem.setString(imageURL.absoluteString, forType: .fileURL)
             imageItems.append(imageItem)
         }
 
@@ -766,9 +880,102 @@ private enum Clipboard {
             ) {
                 textItem.setData(rtf, forType: .rtf)
             }
-            objects.insert(textItem, at: 0)
+            objects.append(textItem)
         }
         return !objects.isEmpty && pasteboard.writeObjects(objects)
+    }
+}
+
+@MainActor
+private enum TextInsertion {
+    static func captureTarget() -> AXUIElement? {
+        let application = NSWorkspace.shared.frontmostApplication
+        guard application?.bundleIdentifier != Bundle.main.bundleIdentifier else { return nil }
+        guard let processIdentifier = application?.processIdentifier else { return nil }
+        return target(in: processIdentifier)
+    }
+
+    private static func target(in processIdentifier: pid_t) -> AXUIElement? {
+        let applicationElement = AXUIElementCreateApplication(processIdentifier)
+        var queue = [applicationElement]
+        var index = 0
+        var editableElements: [AXUIElement] = []
+        while index < queue.count, index < 2_000 {
+            let element = queue[index]
+            index += 1
+            if isEditable(element) {
+                var focused: CFTypeRef?
+                _ = AXUIElementCopyAttributeValue(
+                    element,
+                    kAXFocusedAttribute as CFString,
+                    &focused
+                )
+                if focused as? Bool == true { return element }
+                editableElements.append(element)
+            }
+
+            var children: CFTypeRef?
+            if AXUIElementCopyAttributeValue(
+                element,
+                kAXChildrenAttribute as CFString,
+                &children
+            ) == .success, let children = children as? [AXUIElement] {
+                queue.append(contentsOf: children)
+            }
+        }
+        return editableElements.count == 1 ? editableElements[0] : nil
+    }
+
+    static func insert(_ text: String, into target: AXUIElement?) -> Bool {
+        guard !text.isEmpty, let target, CGPreflightPostEventAccess() else { return false }
+        var processIdentifier: pid_t = 0
+        guard AXUIElementGetPid(target, &processIdentifier) == .success,
+              let application = NSRunningApplication(processIdentifier: processIdentifier),
+              application.activate()
+        else { return false }
+        guard AXUIElementSetAttributeValue(
+            target,
+            kAXFocusedAttribute as CFString,
+            kCFBooleanTrue
+        ) == .success else { return false }
+
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+        else { return false }
+        let characters = Array(text.utf16)
+        characters.withUnsafeBufferPointer {
+            keyDown.keyboardSetUnicodeString(
+                stringLength: $0.count,
+                unicodeString: $0.baseAddress
+            )
+            keyUp.keyboardSetUnicodeString(
+                stringLength: $0.count,
+                unicodeString: $0.baseAddress
+            )
+        }
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+        return true
+    }
+
+    private static func isEditable(_ element: AXUIElement) -> Bool {
+        var role: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXRoleAttribute as CFString,
+            &role
+        ) == .success,
+        let role = role as? String,
+        role == "AXTextArea" || role == "AXTextField"
+        else { return false }
+
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            &settable
+        ) == .success && settable.boolValue
     }
 }
 
@@ -776,8 +983,8 @@ private enum Clipboard {
 private final class InputMonitor {
     private var globalFlagsMonitor: Any?
     private var localFlagsMonitor: Any?
-    private var globalMouseMonitor: Any?
-    private var localMouseMonitor: Any?
+    private var mouseTimer: Timer?
+    private var lastMouseLocation: CGPoint?
     private var chordLatched = false
     private let toggle: () -> Void
     private let mouseMoved: (CGPoint) -> Void
@@ -798,28 +1005,21 @@ private final class InputMonitor {
             return event
         }
 
-        let mouseHandler: (NSEvent) -> Void = { [weak self] event in
-            guard let location = event.cgEvent?.location else { return }
-            DispatchQueue.main.async { self?.mouseMoved(location) }
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async { self?.sampleMouse() }
         }
-        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved, handler: mouseHandler)
-        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
-            if let location = event.cgEvent?.location {
-                DispatchQueue.main.async { self?.mouseMoved(location) }
-            }
-            return event
-        }
+        mouseTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     func stop() {
         if let monitor = globalFlagsMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = localFlagsMonitor { NSEvent.removeMonitor(monitor) }
-        if let monitor = globalMouseMonitor { NSEvent.removeMonitor(monitor) }
-        if let monitor = localMouseMonitor { NSEvent.removeMonitor(monitor) }
+        mouseTimer?.invalidate()
         globalFlagsMonitor = nil
         localFlagsMonitor = nil
-        globalMouseMonitor = nil
-        localMouseMonitor = nil
+        mouseTimer = nil
+        lastMouseLocation = nil
     }
 
     private func handleFlags(_ flags: NSEvent.ModifierFlags) {
@@ -832,6 +1032,13 @@ private final class InputMonitor {
         } else {
             chordLatched = false
         }
+    }
+
+    private func sampleMouse() {
+        guard let location = CGEvent(source: nil)?.location,
+              location != lastMouseLocation else { return }
+        lastMouseLocation = location
+        mouseMoved(location)
     }
 }
 
@@ -866,6 +1073,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     private var microphoneMenu: NSMenu?
     private var statusAnimationTimer: Timer?
     private var statusFeedbackTimer: Timer?
+    private var captureTasks: [Task<Void, Never>] = []
+    private var textInsertionTarget: AXUIElement?
     private var statusPulse = false
     private var reduceMotion = false
 
@@ -920,7 +1129,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         )
         inputMonitor?.start()
         requestMicrophoneAuthorization()
-        requestSystemPermissions()
+        requestScreenCaptureAuthorizationOnce()
+        requestTextInsertionAuthorizationOnce()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -1037,6 +1247,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
                 throw BetterVoiceError.microphoneUnavailable
             }
             output = try SessionOutput()
+            captureTasks.removeAll(keepingCapacity: true)
+            textInsertionTarget = nil
             detector.reset()
             transcript = ""
             try recorder.start(device: selectedMicrophone)
@@ -1056,6 +1268,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
 
     private func stopRecording() {
         guard state == .recording else { return }
+        textInsertionTarget = TextInsertion.captureTarget()
         state = .finishing
         refreshMicrophoneMenu()
         trailOverlay.stop()
@@ -1069,13 +1282,18 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
                 defer { try? FileManager.default.removeItem(at: audioURL) }
                 do {
                     transcript = try await transcriber.transcribe(audioURL)
+                    await waitForCaptures()
                     finishSession()
                 } catch {
+                    await waitForCaptures()
                     finishSession(transcriptionError: error)
                 }
             }
         } catch {
-            finishSession(transcriptionError: error)
+            Task {
+                await waitForCaptures()
+                finishSession(transcriptionError: error)
+            }
         }
     }
 
@@ -1084,9 +1302,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         let hadTranscript = !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         do {
             guard let session else { throw BetterVoiceError.sessionUnavailable }
-            let result = try session.finish(transcript: transcript)
+            let result = try session.finish(
+                transcript: transcript,
+                target: textInsertionTarget
+            )
             let hasContext = !session.images.isEmpty
             output = nil
+            textInsertionTarget = nil
             state = .idle
             recordingHUD.hide()
             refreshMicrophoneMenu()
@@ -1100,7 +1322,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
                     : "Session saved; clipboard text fallback used."
                 showError("Transcription failed: \(transcriptionError.localizedDescription) \(delivery)")
             } else if result.clipboardCopied {
-                if hadTranscript && hasContext {
+                if result.transcriptInserted {
+                    showStatus("Inserted transcript • context copied", resetAfter: 4)
+                } else if hadTranscript && hasContext {
                     showStatus("Copied transcript + context", resetAfter: 4)
                 } else if hadTranscript {
                     showStatus("Copied transcript", resetAfter: 4)
@@ -1114,6 +1338,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             }
         } catch {
             output = nil
+            textInsertionTarget = nil
             state = .idle
             recordingHUD.hide()
             refreshMicrophoneMenu()
@@ -1134,16 +1359,37 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         let overlayPoint = appKitPoint(from: quartzPoint)
         trailOverlay.add(point: overlayPoint, at: now)
         guard let gesture = detector.add(point: quartzPoint, at: now) else { return }
-        let appKitCenter = appKitPoint(from: gesture.center)
-        trailOverlay.confirm(center: appKitCenter, radius: gesture.radius, at: now)
-        do {
-            guard let output else { return }
-            _ = try output.addImage(for: gesture)
-            recordingHUD.setContextCount(output.images.count)
-            showStatus("Recording • \(output.images.count) screen context")
-        } catch {
-            showError(error.localizedDescription)
+        guard let output else { return }
+        let previousCapture = captureTasks.last
+        let task = Task { [weak self] in
+            await previousCapture?.value
+            do {
+                _ = try await output.addImage(for: gesture)
+                guard let self else { return }
+                let appKitCenter = self.appKitPoint(from: gesture.center)
+                self.trailOverlay.confirm(center: appKitCenter, radius: gesture.radius, at: now)
+                self.recordingHUD.confirmCapture(count: output.images.count)
+                self.showStatus("Recording • \(output.images.count) screen context")
+            } catch {
+                guard let self else { return }
+                let message: String
+                if case BetterVoiceError.screenPermissionRequired = error {
+                    message = "Screen permission required"
+                } else {
+                    message = "Screenshot failed"
+                }
+                self.recordingHUD.showCaptureError(message)
+                self.showError(error.localizedDescription)
+            }
         }
+        captureTasks.append(task)
+    }
+
+    private func waitForCaptures() async {
+        for task in captureTasks {
+            await task.value
+        }
+        captureTasks.removeAll(keepingCapacity: true)
     }
 
     private func appKitPoint(from quartzPoint: CGPoint) -> CGPoint {
@@ -1174,11 +1420,17 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         }
     }
 
-    private func requestSystemPermissions() {
-        if !CGPreflightScreenCaptureAccess() {
-            _ = CGRequestScreenCaptureAccess()
-        }
+    private func requestScreenCaptureAuthorizationOnce() {
+        let requestKey = "requestedScreenCaptureForStableSignature"
+        guard !CGPreflightScreenCaptureAccess(), !UserDefaults.standard.bool(forKey: requestKey) else { return }
+        UserDefaults.standard.set(true, forKey: requestKey)
+        _ = CGRequestScreenCaptureAccess()
+    }
 
+    private func requestTextInsertionAuthorizationOnce() {
+        let requestKey = "requestedTextInsertionForStableSignature"
+        guard !AXIsProcessTrusted(), !UserDefaults.standard.bool(forKey: requestKey) else { return }
+        UserDefaults.standard.set(true, forKey: requestKey)
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
     }

@@ -1,20 +1,85 @@
-# BetterVoice MVP
+# Better Voice
 
-BetterVoice is a small macOS menu-bar app for speech plus screen context.
+Voice dictation with the screen context you point at.
 
-1. Build and launch it:
+Better Voice is an experimental macOS menu-bar app that records speech, transcribes it locally, and captures the parts of the screen you circle with your mouse. It is designed for prompts such as “make this button clearer” where the words and the visual reference belong together.
 
-   ```sh
-   ./scripts/build-app.sh
-   ```
+## How it works
 
-2. On first launch, allow Microphone, Screen Recording, and Accessibility access. Accessibility is needed for the global keyboard and mouse gesture.
-3. Click `Download Local Model (~500 MB)` in the menu-bar menu. BetterVoice downloads Parakeet v2 once and keeps transcription on device.
-4. Choose `System Default` or a connected input from the `Microphone` submenu. The selected device is shown in the recording capsule.
-5. Press `⌘⌥` (Command + Option) once to start recording and once again to stop.
-6. While recording, speak and draw a closed circle around anything important. A short blue pointer tail follows the cursor; a blue confirmation ring means a marked screenshot was captured.
-7. BetterVoice transcribes locally after you stop, deletes the temporary audio file, copies the transcript and PNG context to the clipboard, and saves a Markdown session under `~/Desktop/BetterVoice/`.
+1. Press `⌘⌥` (Command + Option) to start recording.
+2. Speak normally. While recording, circle anything important with the pointer.
+3. A blue trail follows the pointer and a blue ring confirms each capture.
+4. Press `⌘⌥` again to stop.
+5. Better Voice transcribes locally, inserts the transcript into the selected text field when possible, and places the transcript and captured images on the clipboard.
 
-The menu-bar icon pulses while recording and a compact bottom-center capsule shows the active microphone, live input level, and screenshot count. Completion and errors stay in the menu status line; no modal interrupts the workflow.
+Each gesture captures the full display containing the pointer and marks the circled area with a restrained blue highlight. Multiple circles create multiple screenshots.
 
-The clipboard contains transcript text, RTF image attachments, and each screenshot as a PNG/TIFF pasteboard item—never a file path. Rich editors can paste the images; plain-text fields paste only the transcript. The fixed `⌘⌥` shortcut and English-only model are deliberate MVP limits.
+## Requirements
+
+- macOS 14 or newer
+- Xcode command-line tools with Swift 6
+- A local Apple code-signing identity, so macOS permissions survive rebuilds
+- Microphone, Screen Recording, and Accessibility permissions
+
+## Build and run
+
+```sh
+git clone https://github.com/TarunTomar122/better-voice.git
+cd better-voice
+./scripts/build-app.sh
+```
+
+The script builds a release app at `.build/BetterVoice.app`, signs it, and launches it. To choose a specific signing identity:
+
+```sh
+BETTERVOICE_SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)" ./scripts/build-app.sh
+```
+
+On first launch:
+
+1. Grant Microphone, Screen Recording, and Accessibility access in System Settings.
+2. Open the Better Voice menu-bar item.
+3. Select **Download Local Model (~500 MB)**.
+4. Choose an input from the **Microphone** submenu, or keep **System Default**.
+
+The workflow uses FluidAudio's local Parakeet v2 model. Audio stays on the Mac and the temporary recording is removed after transcription.
+
+## Clipboard behavior
+
+macOS paste targets decide which clipboard representation they accept. Better Voice therefore:
+
+- inserts the transcript back into the text field that was active when recording stopped, when Accessibility allows it;
+- writes plain text, rich text, PNG, and TIFF representations to the clipboard;
+- keeps every session on disk as a reliable fallback.
+
+In editors that accept attachments, press `⌘V` once after recording to attach the captured images. Plain-text fields paste the transcript only.
+
+## Saved sessions
+
+Sessions are stored locally:
+
+```text
+~/Desktop/BetterVoice/<timestamp>-<id>/
+├── context.md
+├── context-1.png
+└── context-2.png
+```
+
+## Development
+
+Run the focused gesture and trail tests with:
+
+```sh
+swift test -Xswiftc -strict-concurrency=complete
+```
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the compact implementation map.
+
+## Current scope
+
+- English transcription
+- Fixed `⌘⌥` shortcut
+- Source build; no notarized release yet
+- Circle detection is intentionally forgiving and does not require a perfect circle
+
+Built for personal experimentation and inspired by the fluidity of Wispr Flow. Better Voice is not affiliated with Wispr Flow.

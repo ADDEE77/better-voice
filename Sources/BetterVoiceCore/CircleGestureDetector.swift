@@ -24,16 +24,26 @@ public struct CircleGestureDetector {
 
     private var samples: [Sample] = []
     private var cooldownUntil: TimeInterval = 0
-    private let window: TimeInterval = 2
+    private var waitingForExit: CircleGesture?
+    private let window: TimeInterval = 6
 
     public init() {}
 
     public mutating func reset() {
         samples.removeAll(keepingCapacity: true)
         cooldownUntil = 0
+        waitingForExit = nil
     }
 
     public mutating func add(point: CGPoint, at time: TimeInterval) -> CircleGesture? {
+        if let gesture = waitingForExit {
+            guard hypot(point.x - gesture.center.x, point.y - gesture.center.y) > gesture.radius * 1.5 else {
+                return nil
+            }
+            waitingForExit = nil
+            samples.removeAll(keepingCapacity: true)
+        }
+
         guard time >= cooldownUntil else { return nil }
 
         if let previous = samples.last, time - previous.time > 0.45 {
@@ -49,10 +59,23 @@ public struct CircleGestureDetector {
 
         samples.removeAll(keepingCapacity: true)
         cooldownUntil = time + 0.65
+        waitingForExit = gesture
         return gesture
     }
 
     private func recognizedGesture() -> CircleGesture? {
+        guard let last = samples.last?.point else { return nil }
+        for start in stride(from: samples.count - 18, through: 0, by: -1) {
+            let first = samples[start].point
+            guard hypot(first.x - last.x, first.y - last.y) < 160 else { continue }
+            if let gesture = recognizedGesture(in: Array(samples[start...])) {
+                return gesture
+            }
+        }
+        return nil
+    }
+
+    private func recognizedGesture(in samples: [Sample]) -> CircleGesture? {
         guard let first = samples.first?.point, let last = samples.last?.point else { return nil }
 
         let points = samples.map(\.point)
