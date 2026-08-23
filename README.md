@@ -40,7 +40,7 @@ On first launch:
 1. Grant Microphone, Screen Recording, and Accessibility access in System Settings.
 2. Open the Better Voice menu-bar item.
 3. Select **Download Local Model (~500 MB)**.
-4. Choose an input from the **Microphone** submenu, or keep **System Default**.
+4. Choose an input from the **Microphone** submenu, or keep **Automatic**. Automatic prefers a connected external microphone and falls back to the system input.
 
 The workflow uses FluidAudio's local Parakeet v2 model. Audio stays on the Mac and the temporary recording is removed after transcription.
 

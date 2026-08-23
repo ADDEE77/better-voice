@@ -10,7 +10,6 @@ import FluidAudio
 
 private enum BetterVoiceError: LocalizedError {
     case microphoneUnavailable
-    case microphoneSelectionUnavailable(String)
     case microphoneRoutingFailed(String, OSStatus)
     case localModelUnavailable
     case sessionUnavailable
@@ -20,7 +19,6 @@ private enum BetterVoiceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .microphoneUnavailable: return "No microphone input is available."
-        case .microphoneSelectionUnavailable(let name): return "Selected microphone is unavailable: \(name). Choose another microphone from the menu."
         case .microphoneRoutingFailed(let name, let status): return "Could not route audio from \(name) (AudioUnit error \(status))."
         case .localModelUnavailable: return "Download the Local Parakeet model from the BetterVoice menu first."
         case .sessionUnavailable: return "The recording session is no longer available."
@@ -34,6 +32,7 @@ private struct MicrophoneDevice: Equatable {
     let id: AudioDeviceID
     let uid: String
     let name: String
+    let isExternal: Bool
 }
 
 @MainActor
@@ -50,34 +49,28 @@ private final class MicrophoneManager {
         return devices.first { $0.uid == selectedUID }
     }
 
-    var selectionUnavailable: Bool {
-        selectedUID != nil && selectedDevice == nil
-    }
-
     var recordingDevice: MicrophoneDevice? {
-        if selectedUID != nil { return selectedDevice }
-        guard let id = Self.defaultInputDeviceID(),
-              Self.hasInputChannels(id),
-              let uid = Self.stringProperty(id, selector: kAudioDevicePropertyDeviceUID),
-              let name = Self.deviceName(for: id) else { return nil }
-        return MicrophoneDevice(id: id, uid: uid, name: name)
+        selectedDevice ?? automaticDevice
     }
 
     var selectedLabel: String {
         if let selectedDevice { return selectedDevice.name }
-        if let selectedUID { return "Unavailable (\(selectedUID))" }
-        return "System Default — \(systemDefaultName)"
+        return "Automatic — \(automaticDevice?.name ?? "Unavailable")"
     }
 
-    var systemDefaultName: String {
-        guard let deviceID = Self.defaultInputDeviceID() else { return "Unavailable" }
-        return devices.first { $0.id == deviceID }?.name
-            ?? Self.deviceName(for: deviceID)
-            ?? "Unavailable"
+    private var automaticDevice: MicrophoneDevice? {
+        let defaultID = Self.defaultInputDeviceID()
+        return devices.first { $0.id == defaultID && $0.isExternal }
+            ?? devices.first { $0.isExternal }
+            ?? devices.first { $0.id == defaultID }
+            ?? devices.first
     }
 
     func refresh() {
         devices = Self.enumerateInputDevices()
+        if let selectedUID, !devices.contains(where: { $0.uid == selectedUID }) {
+            UserDefaults.standard.removeObject(forKey: selectedUIDKey)
+        }
     }
 
     func select(uid: String?) {
@@ -123,8 +116,27 @@ private final class MicrophoneManager {
             guard hasInputChannels(deviceID),
                   let uid = stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID),
                   let name = deviceName(for: deviceID) else { return nil }
-            return MicrophoneDevice(id: deviceID, uid: uid, name: name)
+            return MicrophoneDevice(
+                id: deviceID,
+                uid: uid,
+                name: name,
+                isExternal: isExternal(deviceID)
+            )
         }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private static func isExternal(_ deviceID: AudioDeviceID) -> Bool {
+        guard let transport = uint32Property(deviceID, selector: kAudioDevicePropertyTransportType) else {
+            return false
+        }
+        return [
+            kAudioDeviceTransportTypeUSB,
+            kAudioDeviceTransportTypeBluetooth,
+            kAudioDeviceTransportTypeBluetoothLE,
+            kAudioDeviceTransportTypeThunderbolt,
+            kAudioDeviceTransportTypeFireWire,
+            kAudioDeviceTransportTypePCI,
+        ].contains(transport)
     }
 
     private static func hasInputChannels(_ deviceID: AudioDeviceID) -> Bool {
@@ -164,6 +176,28 @@ private final class MicrophoneManager {
         }
         guard status == noErr, let value else { return nil }
         return value.takeUnretainedValue() as String
+    }
+
+    private static func uint32Property(
+        _ deviceID: AudioDeviceID,
+        selector: AudioObjectPropertySelector
+    ) -> UInt32? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: UInt32 = 0
+        var dataSize = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            &dataSize,
+            &value
+        ) == noErr else { return nil }
+        return value
     }
 
     private static func deviceName(for deviceID: AudioDeviceID) -> String? {
@@ -1144,15 +1178,15 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         microphoneMenu.removeAllItems()
         let enabled = state == .idle
 
-        let systemDefault = NSMenuItem(
-            title: "System Default — \(microphones.systemDefaultName)",
+        let automatic = NSMenuItem(
+            title: microphones.selectedUID == nil ? microphones.selectedLabel : "Automatic",
             action: #selector(selectMicrophone(_:)),
             keyEquivalent: ""
         )
-        systemDefault.target = self
-        systemDefault.state = microphones.selectedUID == nil ? .on : .off
-        systemDefault.isEnabled = enabled
-        microphoneMenu.addItem(systemDefault)
+        automatic.target = self
+        automatic.state = microphones.selectedUID == nil ? .on : .off
+        automatic.isEnabled = enabled
+        microphoneMenu.addItem(automatic)
 
         if !microphones.devices.isEmpty {
             microphoneMenu.addItem(.separator())
@@ -1167,13 +1201,6 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         } else {
             let unavailable = NSMenuItem(title: "No input microphones found", action: nil, keyEquivalent: "")
             unavailable.isEnabled = false
-            microphoneMenu.addItem(unavailable)
-        }
-
-        if microphones.selectionUnavailable {
-            let unavailable = NSMenuItem(title: "Selected microphone is unavailable", action: nil, keyEquivalent: "")
-            unavailable.isEnabled = false
-            microphoneMenu.addItem(.separator())
             microphoneMenu.addItem(unavailable)
         }
     }
@@ -1240,9 +1267,6 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         do {
             guard transcriber.state == .ready else { throw BetterVoiceError.localModelUnavailable }
             microphones.refresh()
-            guard !microphones.selectionUnavailable else {
-                throw BetterVoiceError.microphoneSelectionUnavailable(microphones.selectedLabel)
-            }
             guard let selectedMicrophone = microphones.recordingDevice else {
                 throw BetterVoiceError.microphoneUnavailable
             }
