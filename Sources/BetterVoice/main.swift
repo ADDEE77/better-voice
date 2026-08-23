@@ -28,9 +28,12 @@ private final class SpeechRecorder: NSObject {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private var latestTranscript = ""
+    private var recognitionError: Error?
+    private var recognitionFinished = false
     private var activeID: UUID?
-    private var pendingFinish: (id: UUID, completion: (String) -> Void)?
-    private let finalizationTimeout: TimeInterval = 3
+    private var pendingFinish: (id: UUID, completion: (Result<String, Error>) -> Void)?
+    private let partialFinalizationTimeout: TimeInterval = 3
+    private let coldFinalizationTimeout: TimeInterval = 8
 
     var onTranscript: ((String) -> Void)?
 
@@ -44,9 +47,13 @@ private final class SpeechRecorder: NSObject {
         let id = UUID()
         activeID = id
         latestTranscript = ""
+        recognitionError = nil
+        recognitionFinished = false
         let audioRequest = SFSpeechAudioBufferRecognitionRequest()
         request = audioRequest
         audioRequest.shouldReportPartialResults = true
+        audioRequest.taskHint = .dictation
+        audioRequest.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
 
         recognitionTask = recognizer.recognitionTask(with: audioRequest) { [weak self] result, error in
             DispatchQueue.main.async {
@@ -67,14 +74,16 @@ private final class SpeechRecorder: NSObject {
             recognitionTask?.cancel()
             recognitionTask = nil
             self.request = nil
+            recognitionError = nil
+            recognitionFinished = false
             activeID = nil
             throw error
         }
     }
 
-    func stop(completion: @escaping (String) -> Void) {
+    func stop(completion: @escaping (Result<String, Error>) -> Void) {
         guard let id = activeID else {
-            completion(latestTranscript)
+            completion(recognitionResult())
             return
         }
         pendingFinish = (id, completion)
@@ -83,8 +92,13 @@ private final class SpeechRecorder: NSObject {
         audioEngine.stop()
         recognitionTask?.finish()
 
-        // Intentional MVP ceiling: wait up to three seconds for Apple's final callback, then preserve the latest partial.
-        DispatchQueue.main.asyncAfter(deadline: .now() + finalizationTimeout) { [weak self] in
+        if recognitionFinished {
+            finishIfNeeded(id: id)
+            return
+        }
+
+        let timeout = latestTranscript.isEmpty ? coldFinalizationTimeout : partialFinalizationTimeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
             self?.finishIfNeeded(id: id)
         }
     }
@@ -94,8 +108,13 @@ private final class SpeechRecorder: NSObject {
         if let result {
             latestTranscript = result.bestTranscription.formattedString
             onTranscript?(latestTranscript)
-            if result.isFinal { finishIfNeeded(id: id) }
-        } else if error != nil {
+            if result.isFinal { recognitionFinished = true }
+        }
+        if let error {
+            recognitionError = error
+            recognitionFinished = true
+        }
+        if recognitionFinished {
             finishIfNeeded(id: id)
         }
     }
@@ -107,8 +126,16 @@ private final class SpeechRecorder: NSObject {
         recognitionTask?.cancel()
         recognitionTask = nil
         request = nil
+        let result = recognitionResult()
+        recognitionError = nil
+        recognitionFinished = false
         onTranscript = nil
-        pendingFinish.completion(latestTranscript)
+        pendingFinish.completion(result)
+    }
+
+    private func recognitionResult() -> Result<String, Error> {
+        if let recognitionError { return .failure(recognitionError) }
+        return .success(latestTranscript)
     }
 }
 
@@ -189,7 +216,7 @@ private struct TrailConfirmation {
 
 @MainActor
 private final class TrailOverlayView: NSView {
-    private let trailLifetime: TimeInterval = 0.8
+    private let trailLifetime: TimeInterval = 1.2
     private let confirmationLifetime: TimeInterval = 0.55
     private var trail: [TrailPoint] = []
     private var confirmations: [TrailConfirmation] = []
@@ -231,12 +258,18 @@ private final class TrailOverlayView: NSView {
             let previous = trail[index - 1]
             let current = trail[index]
             let age = max(0, now - current.time)
-            let alpha = max(0, 0.62 * (1 - age / trailLifetime))
-            guard alpha > 0 else { continue }
-            context.setStrokeColor(NSColor.systemBlue.withAlphaComponent(alpha).cgColor)
-            context.setLineWidth(3)
+            let fade = max(0, 1 - age / trailLifetime)
+            guard fade > 0 else { continue }
             context.move(to: localPoint(previous.point))
             context.addLine(to: localPoint(current.point))
+            context.setStrokeColor(NSColor.systemBlue.withAlphaComponent(0.18 * fade).cgColor)
+            context.setLineWidth(11)
+            context.strokePath()
+
+            context.move(to: localPoint(previous.point))
+            context.addLine(to: localPoint(current.point))
+            context.setStrokeColor(NSColor.systemBlue.withAlphaComponent(0.96 * fade).cgColor)
+            context.setLineWidth(4)
             context.strokePath()
         }
 
@@ -362,8 +395,8 @@ private final class SessionOutput {
 
     func finish(transcript: String) throws -> (markdownURL: URL, clipboardCopied: Bool) {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        let text = trimmed.isEmpty ? "(No transcript captured.)" : trimmed
-        var markdown = "# BetterVoice session\n\n\(text)\n"
+        var markdown = "# BetterVoice session\n\n"
+        markdown += trimmed.isEmpty ? "_No transcript captured._\n" : "\(trimmed)\n"
         if !images.isEmpty {
             markdown += "\n## Screen context\n\n"
             for (index, image) in images.enumerated() {
@@ -373,8 +406,11 @@ private final class SessionOutput {
         let markdownURL = folder.appendingPathComponent("context.md")
         try markdown.write(to: markdownURL, atomically: true, encoding: .utf8)
         let paths = images.enumerated().map { "Context \($0.offset + 1): \($0.element.path)" }.joined(separator: "\n")
-        let clipboardText = images.isEmpty ? text : "\(text)\n\nScreen context:\n\(paths)"
-        let clipboardCopied = Clipboard.copy(transcript: text, images: images, text: clipboardText)
+        var clipboardSections: [String] = []
+        if !trimmed.isEmpty { clipboardSections.append(trimmed) }
+        if !images.isEmpty { clipboardSections.append("Screen context:\n\(paths)") }
+        let clipboardText = clipboardSections.joined(separator: "\n\n")
+        let clipboardCopied = Clipboard.copy(transcript: trimmed, images: images, text: clipboardText)
         print(clipboardText)
         return (markdownURL, clipboardCopied)
     }
@@ -391,8 +427,9 @@ private enum Clipboard {
         guard !images.isEmpty else { return pasteboard.writeObjects([item]) }
 
         let rich = NSMutableAttributedString(string: transcript + (images.isEmpty ? "" : "\n\n"))
+        var imageItems: [NSPasteboardItem] = []
         for (index, imageURL) in images.enumerated() {
-            guard let image = NSImage(contentsOf: imageURL) else {
+            guard let data = try? Data(contentsOf: imageURL), let image = NSImage(data: data) else {
                 _ = pasteboard.writeObjects([item])
                 return false
             }
@@ -400,6 +437,14 @@ private enum Clipboard {
             attachment.image = image
             rich.append(NSAttributedString(attachment: attachment))
             rich.append(NSAttributedString(string: "\nContext \(index + 1)\n\n"))
+
+            let imageItem = NSPasteboardItem()
+            guard imageItem.setData(data, forType: .png),
+                  imageItem.setString(imageURL.absoluteString, forType: .fileURL) else {
+                _ = pasteboard.writeObjects([item])
+                return false
+            }
+            imageItems.append(imageItem)
         }
 
         guard let rtf = try? rich.data(
@@ -409,7 +454,12 @@ private enum Clipboard {
             _ = pasteboard.writeObjects([item])
             return false
         }
-        return pasteboard.writeObjects([item])
+        let objects: [NSPasteboardWriting] = [item] + imageItems
+        guard pasteboard.writeObjects(objects) else {
+            _ = pasteboard.writeObjects([item])
+            return false
+        }
+        return true
     }
 }
 
@@ -579,27 +629,57 @@ private final class AppController: NSObject, NSApplicationDelegate {
         setStatusIcon(.finishing)
         showStatus("Finishing…")
         updateMenuTitle("Finishing… (⌘⌥)", enabled: false)
-        speech.stop { [weak self] finalTranscript in
+        speech.stop { [weak self] result in
             guard let self else { return }
-            self.transcript = finalTranscript.isEmpty ? self.transcript : finalTranscript
-            do {
-                guard let output = self.output else { throw BetterVoiceError.sessionUnavailable }
-                let result = try output.finish(transcript: self.transcript)
-                self.output = nil
-                self.state = .idle
-                self.setStatusIcon(.idle)
-                self.updateMenuTitle("Start recording (⌘⌥)", enabled: true)
-                if result.clipboardCopied {
-                    self.showStatus("Copied transcript + context", resetAfter: 4)
+            switch result {
+            case .success(let finalTranscript):
+                if !finalTranscript.isEmpty { self.transcript = finalTranscript }
+                self.finishSession()
+            case .failure(let error):
+                self.finishSession(speechError: error)
+            }
+        }
+    }
+
+    private func finishSession(speechError: Error? = nil) {
+        let session = output
+        let hadTranscript = !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        do {
+            guard let session else { throw BetterVoiceError.sessionUnavailable }
+            let result = try session.finish(transcript: transcript)
+            let hasContext = !session.images.isEmpty
+            output = nil
+            state = .idle
+            setStatusIcon(.idle)
+            updateMenuTitle("Start recording (⌘⌥)", enabled: true)
+
+            if let speechError {
+                let delivery = result.clipboardCopied
+                    ? (hasContext ? "Screen context copied." : "Session saved.")
+                    : "Session saved; clipboard text fallback used."
+                showError("Speech recognition failed: \(speechError.localizedDescription) \(delivery)")
+            } else if result.clipboardCopied {
+                if hadTranscript && hasContext {
+                    showStatus("Copied transcript + context", resetAfter: 4)
+                } else if hadTranscript {
+                    showStatus("Copied transcript", resetAfter: 4)
+                } else if hasContext {
+                    showStatus("No speech detected • context copied", resetAfter: 4)
                 } else {
-                    self.showError("Saved session; plain-text clipboard fallback used.")
+                    showStatus("No speech detected • session saved", resetAfter: 4)
                 }
-            } catch {
-                self.output = nil
-                self.state = .idle
-                self.setStatusIcon(.idle)
-                self.updateMenuTitle("Start recording (⌘⌥)", enabled: true)
-                self.showError(error.localizedDescription)
+            } else {
+                showError("Saved session; plain-text clipboard fallback used.")
+            }
+        } catch {
+            output = nil
+            state = .idle
+            setStatusIcon(.idle)
+            updateMenuTitle("Start recording (⌘⌥)", enabled: true)
+            if let speechError {
+                showError("Speech recognition failed: \(speechError.localizedDescription); session save failed: \(error.localizedDescription)")
+            } else {
+                showError(error.localizedDescription)
             }
         }
     }
