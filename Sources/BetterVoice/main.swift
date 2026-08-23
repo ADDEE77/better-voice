@@ -258,12 +258,11 @@ private final class LocalTranscriber {
     }
 }
 
-@MainActor
 private final class AudioRecorder {
     private var engine: AVAudioEngine?
     private var audioFile: AVAudioFile?
     private var recordingURL: URL?
-    var onLevel: ((Float) -> Void)?
+    var onLevel: (@MainActor @Sendable (Float) -> Void)?
 
     func start(device: MicrophoneDevice) throws {
         precondition(engine == nil)
@@ -301,7 +300,7 @@ private final class AudioRecorder {
                 sum += samples[index] * samples[index]
             }
             let level = min(1, sqrt(sum / Float(buffer.frameLength)) * 12)
-            DispatchQueue.main.async { levelHandler?(level) }
+            Task { @MainActor in levelHandler?(level) }
         }
 
         do {
