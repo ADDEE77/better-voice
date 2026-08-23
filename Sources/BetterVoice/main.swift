@@ -83,7 +83,7 @@ private final class SpeechRecorder: NSObject {
         audioEngine.stop()
         recognitionTask?.finish()
 
-        // Speech can lag after endAudio; preserve the latest partial after this upper bound.
+        // Intentional MVP ceiling: wait up to three seconds for Apple's final callback, then preserve the latest partial.
         DispatchQueue.main.asyncAfter(deadline: .now() + finalizationTimeout) { [weak self] in
             self?.finishIfNeeded(id: id)
         }
@@ -131,7 +131,7 @@ private final class ScreenshotCapture {
             throw BetterVoiceError.screenshotUnavailable
         }
 
-        let marked = mark(image, target: gesture.center, region: region, radius: gesture.radius)
+        let marked = try mark(image, target: gesture.center, region: region, radius: gesture.radius)
         let representation = NSBitmapImageRep(cgImage: marked)
         guard let data = representation.representation(using: .png, properties: [:]) else {
             throw BetterVoiceError.screenshotUnavailable
@@ -139,11 +139,11 @@ private final class ScreenshotCapture {
         try data.write(to: url, options: .atomic)
     }
 
-    private static func mark(_ image: CGImage, target: CGPoint, region: CGRect, radius: CGFloat) -> CGImage {
+    private static func mark(_ image: CGImage, target: CGPoint, region: CGRect, radius: CGFloat) throws -> CGImage {
         let width = image.width
         let height = image.height
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let context = CGContext(
+        guard let context = CGContext(
             data: nil,
             width: width,
             height: height,
@@ -151,7 +151,9 @@ private final class ScreenshotCapture {
             bytesPerRow: width * 4,
             space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        )!
+        ) else {
+            throw BetterVoiceError.screenshotUnavailable
+        }
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
 
         let scaleX = CGFloat(width) / region.width
@@ -221,24 +223,29 @@ private enum Clipboard {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
 
+        let item = NSPasteboardItem()
+        guard item.setString(text, forType: .string) else { return false }
+        guard !images.isEmpty else { return pasteboard.writeObjects([item]) }
+
         let rich = NSMutableAttributedString(string: transcript + (images.isEmpty ? "" : "\n\n"))
         for (index, imageURL) in images.enumerated() {
-            if let image = NSImage(contentsOf: imageURL) {
-                let attachment = NSTextAttachment()
-                attachment.image = image
-                rich.append(NSAttributedString(attachment: attachment))
-                rich.append(NSAttributedString(string: "\nContext \(index + 1)\n\n"))
+            guard let image = NSImage(contentsOf: imageURL) else {
+                _ = pasteboard.writeObjects([item])
+                return false
             }
+            let attachment = NSTextAttachment()
+            attachment.image = image
+            rich.append(NSAttributedString(attachment: attachment))
+            rich.append(NSAttributedString(string: "\nContext \(index + 1)\n\n"))
         }
 
-        let item = NSPasteboardItem()
-        if let rtf = try? rich.data(
+        guard let rtf = try? rich.data(
             from: NSRange(location: 0, length: rich.length),
             documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
-        ) {
-            item.setData(rtf, forType: .rtf)
+        ), item.setData(rtf, forType: .rtf) else {
+            _ = pasteboard.writeObjects([item])
+            return false
         }
-        guard item.setString(text, forType: .string) else { return false }
         return pasteboard.writeObjects([item])
     }
 }
