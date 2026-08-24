@@ -765,6 +765,7 @@ private final class RecordingHUDView: NSView {
     var level: Float = 0
     var contextCount = 0
     var isFinishing = false
+    var finishingMessage = "Transcribing…"
     var captureMessage: String?
     var reduceMotion = false
 
@@ -784,7 +785,7 @@ private final class RecordingHUDView: NSView {
             NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2).fill()
         }
 
-        let title = captureMessage ?? (isFinishing ? "Transcribing…" : "Listening")
+        let title = captureMessage ?? (isFinishing ? finishingMessage : "Listening")
         let detail = contextCount > 0 ? "\(microphone)  •  \(contextCount) captured" : microphone
         (title as NSString).draw(
             at: NSPoint(x: 62, y: 10),
@@ -887,8 +888,16 @@ private final class RecordingHUDController {
         captureTimer = nil
         view.captureMessage = nil
         view.isFinishing = true
+        view.finishingMessage = "Transcribing…"
         view.level = 0.2
         view.setAccessibilityLabel("BetterVoice transcribing")
+        view.needsDisplay = true
+    }
+
+    func showFinishingStatus(_ message: String) {
+        guard view.isFinishing else { return }
+        view.finishingMessage = message
+        view.setAccessibilityLabel("BetterVoice (message)")
         view.needsDisplay = true
     }
 
@@ -1415,7 +1424,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             self?.refreshSetupModel()
         }
         setupModel.grammarCorrectionEnabled = transcriber.grammarCorrectionEnabled
-        transcriber.onGrammarStatus = { [weak self] status in self?.showStatus(status) }
+        transcriber.onGrammarStatus = { [weak self] status in
+            self?.recordingHUD.showFinishingStatus(status)
+            self?.showStatus(status)
+        }
         recorder.onLevel = { [weak self] level in self?.recordingHUD.update(level: level) }
         Task {
             await transcriber.loadCachedModel()
@@ -1751,6 +1763,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         refreshMicrophoneMenu()
         trailOverlay.stop()
         recordingHUD.showFinishing()
+        if transcriber.grammarCorrectionEnabled {
+            recordingHUD.showFinishingStatus("Polishing transcript locally…")
+        }
         setStatusIcon(.finishing)
         showStatus("Finishing…")
         updateMenuTitle("Finishing… (⌘⌥)", enabled: false)
