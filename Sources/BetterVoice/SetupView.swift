@@ -14,6 +14,7 @@ final class SetupModel: ObservableObject {
     @Published var microphoneName = "Checking…"
     @Published var microphoneOptions: [SetupMicrophoneOption] = []
     @Published var selectedMicrophoneID = "automatic"
+    @Published var microphoneSelectionEnabled = true
     @Published var modelStatus = "Checking…"
     @Published var modelReady = false
     @Published var modelBusy = false
@@ -122,6 +123,7 @@ private struct MicrophoneSetupRow: View {
                 }
                 .labelsHidden()
                 .frame(maxWidth: 260)
+                .disabled(!model.microphoneSelectionEnabled)
                 .accessibilityLabel("Microphone input")
             } else if !model.microphoneGranted {
                 Button("Set Up", action: model.requestMicrophone)

@@ -1408,6 +1408,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     }
 
     private func refreshMicrophoneMenu() {
+        setupModel.microphoneSelectionEnabled = state == .idle
         guard let microphoneMenu else { return }
         microphoneMenu.removeAllItems()
         let enabled = state == .idle
@@ -1486,6 +1487,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         setupModel.accessibilityGranted = AXIsProcessTrusted()
         microphones.refresh()
         setupModel.microphoneName = microphones.selectedLabel
+        setupModel.microphoneSelectionEnabled = state == .idle
         setupModel.selectedMicrophoneID = microphones.selectedUID ?? "automatic"
         setupModel.microphoneOptions = [
             SetupMicrophoneOption(
