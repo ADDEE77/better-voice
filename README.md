@@ -16,9 +16,9 @@ BetterVoice is an experimental, open-source macOS menu-bar app. It transcribes s
 
 Each circle captures the complete display beneath the pointer. Multiple circles produce screenshots in the same order you referenced them.
 
-## Experimental grammar cleanup
+## Grammar cleanup (Beta)
 
-After local transcription, BetterVoice runs the text through the tiny, English-focused [`t5-tiny-gec-hone`](https://huggingface.co/rabden/t5-tiny-gec-hone) model. Its quantized ONNX weights and tokenizer are about 36 MB. Open **Getting Started…**, leave **Grammar cleanup model** on, and press **Download** to prepare it before your first recording; it is stored in `~/Library/Application Support/BetterVoice` and runs locally after that. When enabled, BetterVoice also preloads the cached model in the background after launch so the first recording does not pay the initialization cost. The cleanup toggle is on by default; turn it off to keep the raw Parakeet transcript. The status bar shows “Polishing transcript locally…” while this step runs. If the model cannot download, exceeds its context limit, or returns an incomplete result, BetterVoice keeps the raw transcript so recording still completes.
+Grammar cleanup is off by default. To try the beta, open **Getting Started…**, turn on **Grammar cleanup (Beta)**, and press **Download**. BetterVoice then runs each transcript through the tiny, English-focused [`t5-tiny-gec-hone`](https://huggingface.co/rabden/t5-tiny-gec-hone) model. Its quantized ONNX weights and tokenizer are about 36 MB, stored in `~/Library/Application Support/BetterVoice`, and run locally. When enabled, BetterVoice preloads the cached model in the background after launch so the first recording does not pay the initialization cost. The status bar shows “Polishing transcript locally…” while this step runs. If the model cannot download, exceeds its context limit, or returns an incomplete result, BetterVoice keeps the raw transcript so recording still completes.
 
 This is intentionally experimental: the model fixes capitalization, punctuation, and sentence structure, and it can occasionally change wording. Delete the `t5-tiny-gec-hone` folder to force a fresh download.
 
@@ -68,7 +68,7 @@ Open the menu-bar icon and choose **Getting Started…**. It shows the live stat
 - **Wrong microphone:** choose the device under **Microphone** in the menu-bar menu.
 - **Model download failed:** reopen **Getting Started…** and retry from the model row.
 - **Grammar model download failed:** reopen **Getting Started…** and retry **Download** on the grammar cleanup row.
-- **Grammar cleanup is not wanted:** turn off **Grammar cleanup model** in **Getting Started…**; future sessions keep the raw transcript.
+- **Try grammar cleanup:** turn on **Grammar cleanup (Beta)** in **Getting Started…**, then press **Download**.
 - **Accidental empty recording:** a session shorter than 2.5 seconds with no speech or circles is discarded quietly. Longer empty sessions are saved without opening an error dialog.
 
 ## Clipboard behavior

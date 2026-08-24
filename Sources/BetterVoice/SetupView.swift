@@ -18,7 +18,7 @@ final class SetupModel: ObservableObject {
     @Published var modelStatus = "Checking…"
     @Published var modelReady = false
     @Published var modelBusy = false
-    @Published var grammarCorrectionEnabled = true
+    @Published var grammarCorrectionEnabled = false
     @Published var grammarStatus = "Download on first use (~36 MB)"
     @Published var grammarReady = false
     @Published var grammarBusy = false
@@ -86,7 +86,7 @@ struct SetupView: View {
                     action: model.downloadModel
                 )
                 GrammarSetupRow(
-                    title: "Grammar cleanup model",
+                    title: "Grammar cleanup (Beta)",
                     detail: "t5-tiny-gec-hone runs locally after transcription to fix punctuation and sentence structure. It falls back to the raw transcript if unavailable.",
                     status: model.grammarStatus,
                     ready: model.grammarReady,
@@ -237,7 +237,7 @@ private struct GrammarSetupRow: View {
             VStack(alignment: .trailing, spacing: 7) {
                 Toggle("", isOn: $isEnabled)
                     .labelsHidden()
-                    .accessibilityLabel("Enable grammar cleanup")
+                    .accessibilityLabel("Enable grammar cleanup beta")
                     .disabled(!selectionEnabled)
                 if busy {
                     ProgressView().controlSize(.small)

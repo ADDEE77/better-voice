@@ -249,7 +249,7 @@ private final class LocalTranscriber {
     var onGrammarStatus: ((String) -> Void)?
 
     var grammarCorrectionEnabled: Bool {
-        UserDefaults.standard.object(forKey: Self.grammarCorrectionKey) as? Bool ?? true
+        UserDefaults.standard.object(forKey: Self.grammarCorrectionKey) as? Bool ?? false
     }
 
     var isDownloaded: Bool {
