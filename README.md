@@ -12,7 +12,7 @@ BetterVoice is an experimental, open-source macOS menu-bar app. It transcribes s
 - Press `⌘⌥` for a long explanation. Press it again to finish.
 - A soft native sound confirms when listening starts and when it stops.
 - While recording, circle any important UI with the pointer. A blue trail follows your movement and a pulse confirms each capture.
-- BetterVoice inserts the transcript into the selected text field when macOS allows it, then copies the transcript and captured images to the clipboard.
+- BetterVoice inserts the transcript into the selected text field when macOS allows it. Long explanations also copy the transcript and captured images to the clipboard; quick notes leave your existing clipboard unchanged.
 
 Each circle captures the complete display beneath the pointer. Multiple circles produce screenshots in the same order you referenced them.
 
@@ -73,7 +73,7 @@ Open the menu-bar icon and choose **Getting Started…**. It shows the live stat
 
 ## Clipboard behavior
 
-macOS lets one clipboard contain text, rich text, and image representations, but each destination decides which representation to accept. BetterVoice captures the focused app and field when recording stops, puts only the transcript on the clipboard, and sends one `⌘V` directly to that captured app. It then restores the full text-plus-image clipboard, so you can still attach context manually when needed.
+macOS lets one clipboard contain text, rich text, and image representations, but each destination decides which representation to accept. For a long explanation, BetterVoice captures the focused app and field when recording stops, puts only the transcript on the clipboard, and sends one `⌘V` directly to that captured app. It then restores the full text-plus-image clipboard. A quick `⌥` note uses a temporary clipboard only for insertion and restores the clipboard you had before recording.
 
 ## Privacy and storage
 

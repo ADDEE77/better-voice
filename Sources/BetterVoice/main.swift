@@ -1015,7 +1015,8 @@ private final class SessionOutput {
 
     func finish(
         transcript: String,
-        insertionContext: TextInsertion.Context?
+        insertionContext: TextInsertion.Context?,
+        shouldCopyToClipboard: Bool
     ) throws -> (markdownURL: URL, clipboardCopied: Bool, transcriptInserted: Bool) {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         var markdown = "# BetterVoice session\n\n"
@@ -1028,27 +1029,49 @@ private final class SessionOutput {
         }
         let markdownURL = folder.appendingPathComponent("context.md")
         try markdown.write(to: markdownURL, atomically: true, encoding: .utf8)
-        guard !trimmed.isEmpty,
-              let insertionContext,
-              Clipboard.copyTextOnly(trimmed)
-        else {
-            return (markdownURL, Clipboard.copy(transcript: trimmed, images: images), false)
+        let previousClipboard: [NSPasteboardItem]? = shouldCopyToClipboard
+            ? nil
+            : (NSPasteboard.general.pasteboardItems ?? [])
+        guard !trimmed.isEmpty, let insertionContext else {
+            return (
+                markdownURL,
+                shouldCopyToClipboard && Clipboard.copy(transcript: trimmed, images: images),
+                false
+            )
+        }
+
+        guard Clipboard.copyTextOnly(trimmed) else {
+            if let previousClipboard {
+                Clipboard.restore(previousClipboard, ifChangeCount: NSPasteboard.general.changeCount)
+            }
+            return (markdownURL, false, false)
         }
 
         let pasteboardChangeCount = NSPasteboard.general.changeCount
         guard TextInsertion.paste(into: insertionContext) else {
-            return (markdownURL, Clipboard.copy(transcript: trimmed, images: images), false)
+            if let previousClipboard {
+                Clipboard.restore(previousClipboard, ifChangeCount: pasteboardChangeCount)
+            }
+            return (
+                markdownURL,
+                shouldCopyToClipboard && Clipboard.copy(transcript: trimmed, images: images),
+                false
+            )
         }
 
-        if !images.isEmpty {
+        if shouldCopyToClipboard, !images.isEmpty {
             let transcriptToRestore = trimmed
             let imagesToRestore = images
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 guard NSPasteboard.general.changeCount == pasteboardChangeCount else { return }
                 _ = Clipboard.copy(transcript: transcriptToRestore, images: imagesToRestore)
             }
+        } else if let previousClipboard {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                Clipboard.restore(previousClipboard, ifChangeCount: pasteboardChangeCount)
+            }
         }
-        return (markdownURL, true, true)
+        return (markdownURL, shouldCopyToClipboard, true)
     }
 }
 
@@ -1100,6 +1123,15 @@ private enum Clipboard {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         return pasteboard.setString(transcript, forType: .string)
+    }
+
+    static func restore(_ items: [NSPasteboardItem], ifChangeCount expected: Int) {
+        let pasteboard = NSPasteboard.general
+        guard pasteboard.changeCount == expected else { return }
+        pasteboard.clearContents()
+        if !items.isEmpty {
+            _ = pasteboard.writeObjects(items)
+        }
     }
 }
 
@@ -1771,6 +1803,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
 
     private func finishSession(transcriptionError: Error? = nil) {
         let session = output
+        let shouldCopyToClipboard = recordingMode == .longForm
         let hadTranscript = !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasContext = !(session?.images.isEmpty ?? true)
         let elapsed = recordingStartedAt.map { ProcessInfo.processInfo.systemUptime - $0 } ?? 0
@@ -1787,7 +1820,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
                 do {
                     _ = try session.finish(
                         transcript: transcript,
-                        insertionContext: textInsertionContext
+                        insertionContext: textInsertionContext,
+                        shouldCopyToClipboard: shouldCopyToClipboard
                     )
                 } catch {
                     session.discard()
@@ -1809,20 +1843,28 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             guard let session else { throw BetterVoiceError.sessionUnavailable }
             let result = try session.finish(
                 transcript: transcript,
-                insertionContext: textInsertionContext
+                insertionContext: textInsertionContext,
+                shouldCopyToClipboard: shouldCopyToClipboard
             )
             let hasContext = !session.images.isEmpty
             finishRecordingUI()
 
             if let transcriptionError {
-                let delivery = result.clipboardCopied
+                let delivery = !shouldCopyToClipboard
+                    ? "Session saved."
+                    : result.clipboardCopied
                     ? (hasContext ? "Screen context copied." : "Session saved.")
                     : "Session saved; clipboard text fallback used."
                 showError("Transcription failed: \(transcriptionError.localizedDescription) \(delivery)")
+            } else if result.transcriptInserted {
+                showStatus(
+                    shouldCopyToClipboard && hasContext
+                        ? "Inserted transcript • context copied"
+                        : "Inserted transcript",
+                    resetAfter: 4
+                )
             } else if result.clipboardCopied {
-                if result.transcriptInserted {
-                    showStatus("Inserted transcript • context copied", resetAfter: 4)
-                } else if hadTranscript && hasContext {
+                if hadTranscript && hasContext {
                     showStatus("Copied transcript + context", resetAfter: 4)
                 } else if hadTranscript {
                     showStatus("Copied transcript", resetAfter: 4)
@@ -1831,6 +1873,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
                 } else {
                     showStatus("No speech detected • session saved", resetAfter: 4)
                 }
+            } else if !shouldCopyToClipboard && !hadTranscript {
+                showStatus(
+                    hasContext ? "Screen context saved" : "Session saved",
+                    resetAfter: 4
+                )
+            } else if !shouldCopyToClipboard {
+                showError("Saved session; transcript was not inserted.")
             } else {
                 showError("Saved session; plain-text clipboard fallback used.")
             }
