@@ -86,9 +86,15 @@ public enum DeveloperTextCleanup {
         return result
     }
 
+    /// Characters that continue a word. The accented Latin ranges belong here:
+    /// without them an accented letter reads as a separator, so `api` matches as a
+    /// whole word inside `apiário` and the pass rewrites ordinary prose.
+    private static let wordCharacters =
+        "A-Za-z0-9_./\\-\u{00C0}-\u{00D6}\u{00D8}-\u{00F6}\u{00F8}-\u{00FF}"
+
     private static func replaceWholePhrase(_ source: String, with replacement: String, in text: String) -> String {
         guard let expression = try? NSRegularExpression(
-            pattern: "(?i)(?<![A-Za-z0-9_./-])\(NSRegularExpression.escapedPattern(for: source))(?![A-Za-z0-9_./-])"
+            pattern: "(?i)(?<![\(wordCharacters)])\(NSRegularExpression.escapedPattern(for: source))(?![\(wordCharacters)])"
         ) else { return text }
         let mutable = NSMutableString(string: text)
         let range = NSRange(location: 0, length: mutable.length)

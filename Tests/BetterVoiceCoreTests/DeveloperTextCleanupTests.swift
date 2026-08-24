@@ -71,4 +71,18 @@ final class DeveloperTextCleanupTests: XCTestCase {
             "open src/psequel/main.go"
         )
     }
+
+    func testAccentedWordsThatBeginWithATermAreLeftAlone() {
+        XCTAssertEqual(
+            DeveloperTextCleanup.apply("o apiário fica no sítio"),
+            "o apiário fica no sítio"
+        )
+    }
+
+    func testTermsNextToAccentedWordsAreStillCased() {
+        XCTAssertEqual(
+            DeveloperTextCleanup.apply("a última resposta é json"),
+            "a última resposta é JSON"
+        )
+    }
 }
