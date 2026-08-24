@@ -30,6 +30,28 @@ final class DeveloperTextCleanupTests: XCTestCase {
         )
     }
 
+    func testSentenceEndingTermsStillGetDeveloperCasing() {
+        XCTAssertEqual(
+            DeveloperTextCleanup.apply("i pushed the fix to github."),
+            "i pushed the fix to GitHub."
+        )
+        XCTAssertEqual(
+            DeveloperTextCleanup.apply("Inspect the json. Then call the api.", profile: .editor),
+            "Inspect the JSON. Then call the API."
+        )
+    }
+
+    func testDomainsAndPathsKeepTheirExactSpelling() {
+        XCTAssertEqual(
+            DeveloperTextCleanup.apply("visit github.com for the api-first code"),
+            "visit github.com for the api-first code"
+        )
+        XCTAssertEqual(
+            DeveloperTextCleanup.apply("leave api._private and api.éclair unchanged"),
+            "leave api._private and api.éclair unchanged"
+        )
+    }
+
     func testDeveloperProfilePreservesFileExtensions() {
         XCTAssertEqual(
             DeveloperTextCleanup.apply("run cat package.json", profile: .terminal),
