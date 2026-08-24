@@ -43,4 +43,32 @@ final class DeveloperTextCleanupTests: XCTestCase {
             "Please use SwiftUI, not Swift."
         )
     }
+
+    func testUserTermsAreApplied() {
+        XCTAssertEqual(
+            DeveloperTextCleanup.apply("deploy with cube cuttle", overrides: [("cube cuttle", "kubectl")]),
+            "deploy with kubectl"
+        )
+    }
+
+    func testUserTermsRunFirstSoTheBuiltInCasingStillSeesThem() {
+        XCTAssertEqual(
+            DeveloperTextCleanup.apply("push it to get hub", overrides: [("get hub", "github")]),
+            "push it to GitHub"
+        )
+    }
+
+    func testAUserTermOverridesTheBuiltInSpellingForTheSameSource() {
+        XCTAssertEqual(
+            DeveloperTextCleanup.apply("read the json", overrides: [("json", "Json")]),
+            "read the Json"
+        )
+    }
+
+    func testUserTermsKeepTheWholeWordAndPathProtections() {
+        XCTAssertEqual(
+            DeveloperTextCleanup.apply("open src/psequel/main.go", overrides: [("psequel", "psql")]),
+            "open src/psequel/main.go"
+        )
+    }
 }
