@@ -18,12 +18,19 @@ final class SetupModel: ObservableObject {
     @Published var modelStatus = "Checking…"
     @Published var modelReady = false
     @Published var modelBusy = false
+    @Published var grammarCorrectionEnabled = true
+    @Published var grammarStatus = "Download on first use (~36 MB)"
+    @Published var grammarReady = false
+    @Published var grammarBusy = false
+    @Published var grammarSelectionEnabled = true
 
     var requestMicrophone: () -> Void = {}
     var chooseMicrophone: (String) -> Void = { _ in }
     var requestScreen: () -> Void = {}
     var requestAccessibility: () -> Void = {}
     var downloadModel: () -> Void = {}
+    var downloadGrammarModel: () -> Void = {}
+    var setGrammarCorrection: (Bool) -> Void = { _ in }
     var refresh: () -> Void = {}
     var complete: () -> Void = {}
 }
@@ -77,6 +84,22 @@ struct SetupView: View {
                     ready: model.modelReady,
                     busy: model.modelBusy,
                     action: model.downloadModel
+                )
+                GrammarSetupRow(
+                    title: "Grammar cleanup model",
+                    detail: "t5-tiny-gec-hone runs locally after transcription to fix punctuation and sentence structure. It falls back to the raw transcript if unavailable.",
+                    status: model.grammarStatus,
+                    ready: model.grammarReady,
+                    busy: model.grammarBusy,
+                    selectionEnabled: model.grammarSelectionEnabled,
+                    download: model.downloadGrammarModel,
+                    isEnabled: Binding(
+                        get: { model.grammarCorrectionEnabled },
+                        set: {
+                            model.grammarCorrectionEnabled = $0
+                            model.setGrammarCorrection($0)
+                        }
+                    )
                 )
             }
 
@@ -179,6 +202,50 @@ private struct SetupRow: View {
                 ProgressView().controlSize(.small)
             } else if !ready {
                 Button("Set Up", action: action)
+            }
+        }
+    }
+}
+
+private struct GrammarSetupRow: View {
+    let title: String
+    let detail: String
+    let status: String
+    let ready: Bool
+    let busy: Bool
+    let selectionEnabled: Bool
+    let download: () -> Void
+    @Binding var isEnabled: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "text.badge.checkmark")
+                .foregroundStyle(.blue)
+                .font(.title3)
+                .accessibilityLabel("Information")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).fontWeight(.medium)
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(status)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 12)
+            VStack(alignment: .trailing, spacing: 7) {
+                Toggle("", isOn: $isEnabled)
+                    .labelsHidden()
+                    .accessibilityLabel("Enable grammar cleanup")
+                    .disabled(!selectionEnabled)
+                if busy {
+                    ProgressView().controlSize(.small)
+                } else if !ready {
+                    Button("Download", action: download)
+                        .controlSize(.small)
+                        .disabled(!selectionEnabled)
+                }
             }
         }
     }

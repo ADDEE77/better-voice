@@ -10,14 +10,16 @@ Better Voice is a small native Swift app with one executable target and one test
 4. Mouse events feed `CircleGestureDetector`; the overlay renders the trail without appearing in screenshots.
 5. A recognized gesture asks ScreenCaptureKit for the full display under the pointer, then draws the blue highlight into the saved PNG.
 6. FluidAudio transcribes the temporary audio file locally.
-7. `SessionOutput` writes `context.md`, updates the clipboard, and attempts native text insertion into the captured Accessibility target.
-8. `SessionStorage` deletes sessions older than 7 days and keeps the remaining folder below 500 MB.
+7. The optional, on-by-default `t5-tiny-gec-hone` ONNX pass cleans up punctuation and sentence structure locally; incomplete or unavailable results fall back to the raw transcript.
+8. `SessionOutput` writes `context.md`, updates the clipboard, and attempts native text insertion into the captured Accessibility target.
+9. `SessionStorage` deletes sessions older than 7 days and keeps the remaining folder below 500 MB.
 
 ## Repository map
 
 ```text
 Sources/BetterVoice/main.swift                 macOS app and system integrations
 Sources/BetterVoice/SetupView.swift            onboarding and actionable recovery UI
+Sources/BetterVoice/GrammarCorrector.swift     optional tiny local grammar pass
 Sources/BetterVoiceCore/CircleGestureDetector.swift
 Sources/BetterVoiceCore/RecordingSoundCue.swift
 Sources/BetterVoiceCore/RecordingShortcutState.swift

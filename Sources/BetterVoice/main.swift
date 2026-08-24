@@ -231,11 +231,26 @@ private enum LocalModelState: Equatable {
     case failed(String)
 }
 
+private enum GrammarModelState: Equatable {
+    case missing
+    case downloading
+    case ready
+    case failed(String)
+}
+
 @MainActor
 private final class LocalTranscriber {
+    private static let grammarCorrectionKey = "grammarCorrectionEnabled"
     private(set) var state: LocalModelState = .missing
+    private(set) var grammarModelState: GrammarModelState = .missing
     private var manager: AsrManager?
+    private let grammarCorrector = GrammarCorrector()
     var onStateChange: (() -> Void)?
+    var onGrammarStatus: ((String) -> Void)?
+
+    var grammarCorrectionEnabled: Bool {
+        UserDefaults.standard.object(forKey: Self.grammarCorrectionKey) as? Bool ?? true
+    }
 
     var isDownloaded: Bool {
         AsrModels.modelsExist(
@@ -256,10 +271,33 @@ private final class LocalTranscriber {
         await prepare(download: true)
     }
 
+    func setGrammarCorrectionEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: Self.grammarCorrectionKey)
+    }
+
+    func loadCachedGrammarModel() async {
+        grammarModelState = await grammarCorrector.isCached() ? .ready : .missing
+        onStateChange?()
+    }
+
+    func downloadGrammarModel() async {
+        guard grammarModelState != .downloading else { return }
+        grammarModelState = .downloading
+        onStateChange?()
+        grammarModelState = await grammarCorrector.preload() ? .ready : .failed("retry from Getting Started")
+        onStateChange?()
+    }
+
     func transcribe(_ url: URL) async throws -> String {
         guard let manager else { throw BetterVoiceError.localModelUnavailable }
         var decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
-        return try await manager.transcribe(url, decoderState: &decoderState).text
+        let transcript = try await manager.transcribe(url, decoderState: &decoderState).text
+        guard grammarCorrectionEnabled else { return transcript }
+        guard transcript.split(whereSeparator: \.isWhitespace).count > 1 else { return transcript }
+        onGrammarStatus?("Polishing transcript locally…")
+        let corrected = await grammarCorrector.correct(transcript)
+        onGrammarStatus?("Finishing…")
+        return corrected
     }
 
     private func prepare(download: Bool) async {
@@ -1303,6 +1341,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         model.requestScreen = { [weak self] in self?.requestScreenCaptureAuthorization() }
         model.requestAccessibility = { [weak self] in self?.requestTextInsertionAuthorization() }
         model.downloadModel = { [weak self] in self?.downloadModel() }
+        model.downloadGrammarModel = { [weak self] in self?.downloadGrammarModel() }
+        model.setGrammarCorrection = { [weak self] enabled in
+            self?.transcriber.setGrammarCorrectionEnabled(enabled)
+        }
         model.refresh = { [weak self] in self?.refreshSetupModel() }
         model.complete = { [weak self] in
             UserDefaults.standard.set(true, forKey: "completedOnboarding")
@@ -1367,8 +1409,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             self?.refreshModelMenu()
             self?.refreshSetupModel()
         }
-            recorder.onLevel = { [weak self] level in self?.recordingHUD.update(level: level) }
-        Task { await transcriber.loadCachedModel() }
+        setupModel.grammarCorrectionEnabled = transcriber.grammarCorrectionEnabled
+        transcriber.onGrammarStatus = { [weak self] status in self?.showStatus(status) }
+        recorder.onLevel = { [weak self] level in self?.recordingHUD.update(level: level) }
+        Task {
+            await transcriber.loadCachedModel()
+            await transcriber.loadCachedGrammarModel()
+        }
 
         inputMonitor = InputMonitor(
             startPushToTalk: { [weak self] in self?.startPushToTalk() },
@@ -1500,6 +1547,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
                 name: device.name
             )
         }
+        setupModel.grammarSelectionEnabled = state == .idle
         switch transcriber.state {
         case .missing:
             setupModel.modelStatus = "Download once (~500 MB); transcription stays on this Mac"
@@ -1521,6 +1569,24 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             setupModel.modelStatus = "Download failed: \(message)"
             setupModel.modelReady = false
             setupModel.modelBusy = false
+        }
+        switch transcriber.grammarModelState {
+        case .missing:
+            setupModel.grammarStatus = "Download once (~36 MB) before recording"
+            setupModel.grammarReady = false
+            setupModel.grammarBusy = false
+        case .downloading:
+            setupModel.grammarStatus = "Downloading…"
+            setupModel.grammarReady = false
+            setupModel.grammarBusy = true
+        case .ready:
+            setupModel.grammarStatus = "Ready • runs locally on this Mac"
+            setupModel.grammarReady = true
+            setupModel.grammarBusy = false
+        case .failed(let message):
+            setupModel.grammarStatus = "Download failed: " + message
+            setupModel.grammarReady = false
+            setupModel.grammarBusy = false
         }
     }
 
@@ -1564,6 +1630,22 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
                 showStatus("Local model ready • hold ⌥ or press ⌘⌥", resetAfter: 4)
             case .failed(let message):
                 showError("Model download failed: \(message)")
+            default:
+                break
+            }
+        }
+    }
+
+    private func downloadGrammarModel() {
+        guard state == .idle else { return }
+        showStatus("Downloading grammar model…")
+        Task {
+            await transcriber.downloadGrammarModel()
+            switch transcriber.grammarModelState {
+            case .ready:
+                showStatus("Grammar cleanup ready", resetAfter: 4)
+            case .failed(let message):
+                showError("Grammar model download failed", detail: message)
             default:
                 break
             }
