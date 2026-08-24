@@ -280,6 +280,11 @@ private final class LocalTranscriber {
         onStateChange?()
     }
 
+    func prewarmGrammarModel() async {
+        guard grammarCorrectionEnabled, grammarModelState != .ready else { return }
+        await downloadGrammarModel()
+    }
+
     func downloadGrammarModel() async {
         guard grammarModelState != .downloading else { return }
         grammarModelState = .downloading
@@ -1415,6 +1420,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         Task {
             await transcriber.loadCachedModel()
             await transcriber.loadCachedGrammarModel()
+            await transcriber.prewarmGrammarModel()
         }
 
         inputMonitor = InputMonitor(
