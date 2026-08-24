@@ -4,6 +4,14 @@ Voice dictation with the screen context you point at.
 
 BetterVoice is an experimental, open-source macOS menu-bar app. It transcribes speech locally and captures the full screen whenever you circle something with your pointer, leaving a restrained blue highlight around the referenced area.
 
+<p>
+  <a href="https://buymeacoffee.com/taratdev">
+    <img src="docs/assets/buy-me-a-coffee.svg" alt="Buy me a coffee" height="52">
+  </a>
+</p>
+
+If you enjoy BetterVoice or any of my other experiments, a coffee helps support future projects. ❤️
+
 ![BetterVoice onboarding and visual capture preview](docs/assets/bettervoice-onboarding.png)
 
 ## Use it
@@ -109,5 +117,3 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the implementation map.
 Current scope: English transcription, Apple Silicon macOS 14+, and an experimental downloadable release. The release is not notarized with a Developer ID certificate yet. Circle recognition is intentionally forgiving; you do not need to draw a perfect circle.
 
 Inspired by the fluidity of Wispr Flow. BetterVoice is not affiliated with Wispr Flow.
-
-If BetterVoice is useful, you can [buy me a coffee](https://buymeacoffee.com/taratdev) to support this and future experiments.
