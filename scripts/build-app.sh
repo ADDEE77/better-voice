@@ -24,4 +24,6 @@ if [[ -z "$signing_identity" ]]; then
   exit 1
 fi
 codesign --force --deep --sign "$signing_identity" "$app_dir"
-open -n "$app_dir"
+if [[ "${BETTERVOICE_SKIP_OPEN:-0}" != "1" ]]; then
+  open -n "$app_dir"
+fi

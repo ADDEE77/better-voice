@@ -16,6 +16,17 @@ BetterVoice is an experimental, open-source macOS menu-bar app. It transcribes s
 
 Each circle captures the complete display beneath the pointer. Multiple circles produce screenshots in the same order you referenced them.
 
+## Download
+
+Download the latest Apple Silicon build from the [BetterVoice releases page](https://github.com/TarunTomar122/better-voice/releases/latest). Choose `BetterVoice-macos-arm64.zip`, unzip it, and open `BetterVoice.app`:
+
+```sh
+unzip BetterVoice-macos-arm64.zip
+open BetterVoice.app
+```
+
+The release targets macOS 14+ on Apple Silicon. This experimental build is signed with an Apple Development certificate and is not notarized with a Developer ID certificate yet. On the first launch, macOS may require you to Control-click the app, choose **Open**, and confirm. If macOS still blocks it, use **System Settings → Privacy & Security → Open Anyway**. Then approve Microphone, Screen Recording, and Accessibility when BetterVoice asks. The local speech model downloads once (about 500 MB).
+
 ## Install from source
 
 Requirements: macOS 14+, Swift 6/Xcode command-line tools, and a local Apple code-signing identity.
@@ -83,6 +94,8 @@ swift test -Xswiftc -strict-concurrency=complete
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the implementation map.
 
-Current scope: English transcription, source builds, and macOS 14+. There is no notarized binary release yet. Circle recognition is intentionally forgiving; you do not need to draw a perfect circle.
+Current scope: English transcription, Apple Silicon macOS 14+, and an experimental downloadable release. The release is not notarized with a Developer ID certificate yet. Circle recognition is intentionally forgiving; you do not need to draw a perfect circle.
 
 Inspired by the fluidity of Wispr Flow. BetterVoice is not affiliated with Wispr Flow.
+
+If BetterVoice is useful, you can [buy me a coffee](https://buymeacoffee.com/taratdev) to support this and future experiments.
