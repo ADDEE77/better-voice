@@ -64,7 +64,7 @@ Open the menu-bar icon and choose **Getting Started…**. It shows the live stat
 
 - **Shortcut does nothing:** enable **Accessibility**, confirm the local model says Ready, and make sure only one BetterVoice process is running. The build script closes the previous process before launching a rebuild.
 - **No screenshot:** enable BetterVoice in **System Settings → Privacy & Security → Screen Recording**, then quit and reopen the app. The setup screen reads the current macOS permission every time; it does not cache an old answer.
-- **Transcript is not inserted:** enable **Accessibility**. The transcript remains on the clipboard and in the saved session when the target app blocks direct insertion.
+- **Transcript is not inserted:** enable **Accessibility**. The transcript remains on the clipboard and in the saved session when the target app blocks paste events.
 - **Wrong microphone:** choose the device under **Microphone** in the menu-bar menu.
 - **Model download failed:** reopen **Getting Started…** and retry from the model row.
 - **Grammar model download failed:** reopen **Getting Started…** and retry **Download** on the grammar cleanup row.
@@ -73,7 +73,7 @@ Open the menu-bar icon and choose **Getting Started…**. It shows the live stat
 
 ## Clipboard behavior
 
-macOS lets one clipboard contain text, rich text, and image representations, but each destination decides which representation to accept. BetterVoice captures the focused app at recording start, attempts direct transcript insertion, and automatically falls back to a text-only `⌘V` in that app when Accessibility cannot address the field. It then restores the full text-plus-image clipboard, so you can still attach context manually when needed.
+macOS lets one clipboard contain text, rich text, and image representations, but each destination decides which representation to accept. BetterVoice captures the focused app and field when recording stops, puts only the transcript on the clipboard, and sends one `⌘V` directly to that captured app. It then restores the full text-plus-image clipboard, so you can still attach context manually when needed.
 
 ## Privacy and storage
 

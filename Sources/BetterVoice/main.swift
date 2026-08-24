@@ -1015,8 +1015,7 @@ private final class SessionOutput {
 
     func finish(
         transcript: String,
-        target: AXUIElement?,
-        processIdentifier: pid_t?
+        insertionContext: TextInsertion.Context?
     ) throws -> (markdownURL: URL, clipboardCopied: Bool, transcriptInserted: Bool) {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         var markdown = "# BetterVoice session\n\n"
@@ -1029,27 +1028,27 @@ private final class SessionOutput {
         }
         let markdownURL = folder.appendingPathComponent("context.md")
         try markdown.write(to: markdownURL, atomically: true, encoding: .utf8)
-        var transcriptInserted = !trimmed.isEmpty && target != nil && TextInsertion.insert(
-            trimmed,
-            into: target,
-            processIdentifier: processIdentifier
-        )
-        var clipboardCopied = Clipboard.copy(transcript: trimmed, images: images)
-        if !transcriptInserted && !trimmed.isEmpty {
-            if Clipboard.copyTextOnly(trimmed) {
-                transcriptInserted = TextInsertion.paste(processIdentifier: processIdentifier)
-                if transcriptInserted && !images.isEmpty {
-                    let transcriptToRestore = trimmed
-                    let imagesToRestore = images
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        _ = Clipboard.copy(transcript: transcriptToRestore, images: imagesToRestore)
-                    }
-                } else if !transcriptInserted {
-                    clipboardCopied = Clipboard.copy(transcript: trimmed, images: images) || clipboardCopied
-                }
+        guard !trimmed.isEmpty,
+              let insertionContext,
+              Clipboard.copyTextOnly(trimmed)
+        else {
+            return (markdownURL, Clipboard.copy(transcript: trimmed, images: images), false)
+        }
+
+        let pasteboardChangeCount = NSPasteboard.general.changeCount
+        guard TextInsertion.paste(into: insertionContext) else {
+            return (markdownURL, Clipboard.copy(transcript: trimmed, images: images), false)
+        }
+
+        if !images.isEmpty {
+            let transcriptToRestore = trimmed
+            let imagesToRestore = images
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                guard NSPasteboard.general.changeCount == pasteboardChangeCount else { return }
+                _ = Clipboard.copy(transcript: transcriptToRestore, images: imagesToRestore)
             }
         }
-        return (markdownURL, clipboardCopied, transcriptInserted)
+        return (markdownURL, true, true)
     }
 }
 
@@ -1107,141 +1106,56 @@ private enum Clipboard {
 @MainActor
 private enum TextInsertion {
     struct Context {
-        let target: AXUIElement?
-        let processIdentifier: pid_t?
+        let focusedElement: AXUIElement?
+        let processIdentifier: pid_t
     }
 
-    static func captureContext() -> Context {
-        let application = NSWorkspace.shared.frontmostApplication
-        guard application?.bundleIdentifier != Bundle.main.bundleIdentifier,
-              let processIdentifier = application?.processIdentifier
-        else { return Context(target: nil, processIdentifier: nil) }
-        return Context(target: target(in: processIdentifier), processIdentifier: processIdentifier)
-    }
-
-    private static func target(in processIdentifier: pid_t) -> AXUIElement? {
-        let applicationElement = AXUIElementCreateApplication(processIdentifier)
+    static func captureContext() -> Context? {
+        guard let application = NSWorkspace.shared.frontmostApplication,
+              application.bundleIdentifier != Bundle.main.bundleIdentifier
+        else { return nil }
+        let processIdentifier = application.processIdentifier
         let systemWideElement = AXUIElementCreateSystemWide()
         var focused: CFTypeRef?
+        var focusedElement: AXUIElement?
         if AXUIElementCopyAttributeValue(
             systemWideElement,
             kAXFocusedUIElementAttribute as CFString,
             &focused
         ) == .success, let focused {
-            let focusedElement = focused as! AXUIElement
-            if isEditable(focusedElement) { return focusedElement }
-        }
-
-        var queue = [applicationElement]
-        var index = 0
-        var editableElements: [AXUIElement] = []
-        while index < queue.count, index < 2_000 {
-            let element = queue[index]
-            index += 1
-            if isEditable(element) {
-                var focused: CFTypeRef?
-                _ = AXUIElementCopyAttributeValue(
-                    element,
-                    kAXFocusedAttribute as CFString,
-                    &focused
-                )
-                if focused as? Bool == true { return element }
-                editableElements.append(element)
-            }
-
-            var children: CFTypeRef?
-            if AXUIElementCopyAttributeValue(
-                element,
-                kAXChildrenAttribute as CFString,
-                &children
-            ) == .success, let children = children as? [AXUIElement] {
-                queue.append(contentsOf: children)
+            let candidate = focused as! AXUIElement
+            var focusedProcessIdentifier: pid_t = 0
+            if AXUIElementGetPid(candidate, &focusedProcessIdentifier) == .success,
+               focusedProcessIdentifier == processIdentifier {
+                focusedElement = candidate
             }
         }
-        return editableElements.count == 1 ? editableElements[0] : nil
+        return Context(focusedElement: focusedElement, processIdentifier: processIdentifier)
     }
 
-    static func insert(_ text: String, into target: AXUIElement?, processIdentifier: pid_t?) -> Bool {
-        guard !text.isEmpty, CGPreflightPostEventAccess() else { return false }
-        var targetProcessIdentifier: pid_t = 0
-        if let target {
-            guard AXUIElementGetPid(target, &targetProcessIdentifier) == .success else { return false }
-        }
-        let processIdentifier = targetProcessIdentifier == 0 ? processIdentifier : targetProcessIdentifier
-        guard let processIdentifier,
-              let application = NSRunningApplication(processIdentifier: processIdentifier),
+    static func paste(into context: Context) -> Bool {
+        guard CGPreflightPostEventAccess(),
+              let application = NSRunningApplication(processIdentifier: context.processIdentifier),
               application.bundleIdentifier != Bundle.main.bundleIdentifier
         else { return false }
-        _ = application.activate()
-        if let target,
-           AXUIElementSetAttributeValue(
-               target,
+
+        if let focusedElement = context.focusedElement {
+            _ = AXUIElementSetAttributeValue(
+               focusedElement,
                kAXFocusedAttribute as CFString,
                kCFBooleanTrue
-           ) != .success {
-            return false
+            )
         }
 
-        postUnicode(text)
-        return true
-    }
-
-    static func paste(processIdentifier: pid_t?) -> Bool {
-        let processIdentifier = processIdentifier ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
-        guard CGPreflightPostEventAccess(),
-              let processIdentifier,
-              let application = NSRunningApplication(processIdentifier: processIdentifier),
-              application.bundleIdentifier != Bundle.main.bundleIdentifier
-        else { return false }
-        _ = application.activate()
         let source = CGEventSource(stateID: .hidSystemState)
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
         else { return false }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
+        keyDown.postToPid(context.processIdentifier)
+        keyUp.postToPid(context.processIdentifier)
         return true
-    }
-
-    private static func postUnicode(_ text: String) {
-        let source = CGEventSource(stateID: .hidSystemState)
-        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
-        else { return }
-        let characters = Array(text.utf16)
-        characters.withUnsafeBufferPointer {
-            keyDown.keyboardSetUnicodeString(
-                stringLength: $0.count,
-                unicodeString: $0.baseAddress
-            )
-            keyUp.keyboardSetUnicodeString(
-                stringLength: $0.count,
-                unicodeString: $0.baseAddress
-            )
-        }
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
-    }
-
-    private static func isEditable(_ element: AXUIElement) -> Bool {
-        var role: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            kAXRoleAttribute as CFString,
-            &role
-        ) == .success,
-        let role = role as? String,
-        role == "AXTextArea" || role == "AXTextField"
-        else { return false }
-
-        var settable = DarwinBoolean(false)
-        return AXUIElementIsAttributeSettable(
-            element,
-            kAXSelectedTextAttribute as CFString,
-            &settable
-        ) == .success && settable.boolValue
     }
 }
 
@@ -1409,8 +1323,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     private var statusFeedbackTimer: Timer?
     private var recordingLimitTimer: Timer?
     private var captureTasks: [Task<Void, Never>] = []
-    private var textInsertionTarget: AXUIElement?
-    private var textInsertionProcessIdentifier: pid_t?
+    private var textInsertionContext: TextInsertion.Context?
     private var statusPulse = false
     private var reduceMotion = false
     private lazy var setupModel: SetupModel = {
@@ -1772,15 +1685,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     private func startRecording(mode: RecordingMode) {
         do {
             guard transcriber.state == .ready else { throw BetterVoiceError.localModelUnavailable }
-            let insertionContext = TextInsertion.captureContext()
             microphones.refresh()
             guard let selectedMicrophone = microphones.recordingDevice else {
                 throw BetterVoiceError.microphoneUnavailable
             }
             output = try SessionOutput()
             captureTasks.removeAll(keepingCapacity: true)
-            textInsertionTarget = insertionContext.target
-            textInsertionProcessIdentifier = insertionContext.processIdentifier
+            textInsertionContext = nil
             detector.reset()
             transcript = ""
             recordingSounds.play(.started)
@@ -1824,6 +1735,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         guard state == .recording else { return }
         recordingLimitTimer?.invalidate()
         recordingLimitTimer = nil
+        textInsertionContext = TextInsertion.captureContext()
         state = .finishing
         inputMonitor?.stopMouseTracking()
         refreshMicrophoneMenu()
@@ -1875,8 +1787,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
                 do {
                     _ = try session.finish(
                         transcript: transcript,
-                        target: textInsertionTarget,
-                        processIdentifier: textInsertionProcessIdentifier
+                        insertionContext: textInsertionContext
                     )
                 } catch {
                     session.discard()
@@ -1898,8 +1809,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             guard let session else { throw BetterVoiceError.sessionUnavailable }
             let result = try session.finish(
                 transcript: transcript,
-                target: textInsertionTarget,
-                processIdentifier: textInsertionProcessIdentifier
+                insertionContext: textInsertionContext
             )
             let hasContext = !session.images.isEmpty
             finishRecordingUI()
@@ -1937,8 +1847,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
 
     private func finishRecordingUI() {
         output = nil
-        textInsertionTarget = nil
-        textInsertionProcessIdentifier = nil
+        textInsertionContext = nil
         recordingStartedAt = nil
         state = .idle
         recordingMode = nil

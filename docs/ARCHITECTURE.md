@@ -11,7 +11,7 @@ Better Voice is a small native Swift app with one executable target and one test
 5. A recognized gesture asks ScreenCaptureKit for the full display under the pointer, then draws the blue highlight into the saved PNG.
 6. FluidAudio transcribes the temporary audio file locally.
 7. The optional, on-by-default `t5-tiny-gec-hone` ONNX pass cleans up punctuation and sentence structure locally. It preloads in the background after launch; incomplete or unavailable results fall back to the raw transcript.
-8. `SessionOutput` writes `context.md`, updates the clipboard, and inserts into the captured app, falling back to an automatic text-only paste when an Accessibility target is unavailable.
+8. At stop, BetterVoice captures the focused app and field. `SessionOutput` writes `context.md`, sends one text-only paste to that app, then restores the full text-plus-image clipboard.
 9. `SessionStorage` deletes sessions older than 7 days and keeps the remaining folder below 500 MB.
 
 ## Repository map
