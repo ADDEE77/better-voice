@@ -1029,9 +1029,7 @@ private final class SessionOutput {
         }
         let markdownURL = folder.appendingPathComponent("context.md")
         try markdown.write(to: markdownURL, atomically: true, encoding: .utf8)
-        let previousClipboard: [NSPasteboardItem]? = shouldCopyToClipboard
-            ? nil
-            : (NSPasteboard.general.pasteboardItems ?? [])
+        let previousClipboard = shouldCopyToClipboard ? nil : Clipboard.snapshot()
         guard !trimmed.isEmpty, let insertionContext else {
             return (
                 markdownURL,
@@ -1077,6 +1075,10 @@ private final class SessionOutput {
 
 @MainActor
 private enum Clipboard {
+    struct SavedItem {
+        let representations: [(NSPasteboard.PasteboardType, Data)]
+    }
+
     static func copy(transcript: String, images: [URL]) -> Bool {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -1125,13 +1127,29 @@ private enum Clipboard {
         return pasteboard.setString(transcript, forType: .string)
     }
 
-    static func restore(_ items: [NSPasteboardItem], ifChangeCount expected: Int) {
+    static func snapshot() -> [SavedItem] {
+        (NSPasteboard.general.pasteboardItems ?? []).compactMap { item in
+            let representations = item.types.compactMap { type -> (NSPasteboard.PasteboardType, Data)? in
+                guard let data = item.data(forType: type) else { return nil }
+                return (type, data)
+            }
+            return representations.isEmpty ? nil : SavedItem(representations: representations)
+        }
+    }
+
+    static func restore(_ items: [SavedItem], ifChangeCount expected: Int) {
         let pasteboard = NSPasteboard.general
         guard pasteboard.changeCount == expected else { return }
         pasteboard.clearContents()
-        if !items.isEmpty {
-            _ = pasteboard.writeObjects(items)
+        let freshItems = items.map { savedItem in
+            let item = NSPasteboardItem()
+            for (type, data) in savedItem.representations {
+                _ = item.setData(data, forType: type)
+            }
+            return item
         }
+        guard !freshItems.isEmpty else { return }
+        _ = pasteboard.writeObjects(freshItems)
     }
 }
 
