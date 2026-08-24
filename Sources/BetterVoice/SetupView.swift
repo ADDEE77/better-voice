@@ -22,6 +22,7 @@ final class SetupModel: ObservableObject {
     @Published var grammarStatus = "Download on first use (~36 MB)"
     @Published var grammarReady = false
     @Published var grammarBusy = false
+    @Published var developerCleanupEnabled = true
     @Published var grammarSelectionEnabled = true
 
     var requestMicrophone: () -> Void = {}
@@ -31,6 +32,7 @@ final class SetupModel: ObservableObject {
     var downloadModel: () -> Void = {}
     var downloadGrammarModel: () -> Void = {}
     var setGrammarCorrection: (Bool) -> Void = { _ in }
+    var setDeveloperCleanup: (Bool) -> Void = { _ in }
     var refresh: () -> Void = {}
     var complete: () -> Void = {}
 }
@@ -98,6 +100,23 @@ struct SetupView: View {
                         set: {
                             model.grammarCorrectionEnabled = $0
                             model.setGrammarCorrection($0)
+                        }
+                    )
+                )
+                GrammarSetupRow(
+                    title: "Developer vocabulary (Beta)",
+                    detail: "A fast local pass for technical terms such as npm, GitHub, SwiftUI, API, and JSON. No extra model download.",
+                    status: "Preserves your wording and adapts acronyms for developer apps.",
+                    ready: true,
+                    busy: false,
+                    selectionEnabled: model.grammarSelectionEnabled,
+                    download: {},
+                    toggleAccessibilityLabel: "Enable developer vocabulary beta",
+                    isEnabled: Binding(
+                        get: { model.developerCleanupEnabled },
+                        set: {
+                            model.developerCleanupEnabled = $0
+                            model.setDeveloperCleanup($0)
                         }
                     )
                 )
@@ -215,6 +234,7 @@ private struct GrammarSetupRow: View {
     let busy: Bool
     let selectionEnabled: Bool
     let download: () -> Void
+    var toggleAccessibilityLabel = "Enable grammar cleanup beta"
     @Binding var isEnabled: Bool
 
     var body: some View {
@@ -237,7 +257,7 @@ private struct GrammarSetupRow: View {
             VStack(alignment: .trailing, spacing: 7) {
                 Toggle("", isOn: $isEnabled)
                     .labelsHidden()
-                    .accessibilityLabel("Enable grammar cleanup beta")
+                    .accessibilityLabel(toggleAccessibilityLabel)
                     .disabled(!selectionEnabled)
                 if busy {
                     ProgressView().controlSize(.small)

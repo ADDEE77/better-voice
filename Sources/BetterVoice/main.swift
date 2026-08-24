@@ -241,6 +241,7 @@ private enum GrammarModelState: Equatable {
 @MainActor
 private final class LocalTranscriber {
     private static let grammarCorrectionKey = "grammarCorrectionEnabled"
+    private static let developerCleanupKey = "developerCleanupEnabled"
     private(set) var state: LocalModelState = .missing
     private(set) var grammarModelState: GrammarModelState = .missing
     private var manager: AsrManager?
@@ -250,6 +251,10 @@ private final class LocalTranscriber {
 
     var grammarCorrectionEnabled: Bool {
         UserDefaults.standard.object(forKey: Self.grammarCorrectionKey) as? Bool ?? false
+    }
+
+    var developerCleanupEnabled: Bool {
+        UserDefaults.standard.object(forKey: Self.developerCleanupKey) as? Bool ?? true
     }
 
     var isDownloaded: Bool {
@@ -275,6 +280,10 @@ private final class LocalTranscriber {
         UserDefaults.standard.set(enabled, forKey: Self.grammarCorrectionKey)
     }
 
+    func setDeveloperCleanupEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: Self.developerCleanupKey)
+    }
+
     func loadCachedGrammarModel() async {
         grammarModelState = await grammarCorrector.isCached() ? .ready : .missing
         onStateChange?()
@@ -293,16 +302,21 @@ private final class LocalTranscriber {
         onStateChange?()
     }
 
-    func transcribe(_ url: URL) async throws -> String {
+    func transcribe(_ url: URL, profile: DeveloperAppProfile = .general) async throws -> String {
         guard let manager else { throw BetterVoiceError.localModelUnavailable }
         var decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
         let transcript = try await manager.transcribe(url, decoderState: &decoderState).text
-        guard grammarCorrectionEnabled else { return transcript }
-        guard transcript.split(whereSeparator: \.isWhitespace).count > 1 else { return transcript }
+        let developerCleaned = developerCleanupEnabled
+            ? DeveloperTextCleanup.apply(transcript, profile: profile)
+            : transcript
+        guard grammarCorrectionEnabled else { return developerCleaned }
+        guard developerCleaned.split(whereSeparator: \.isWhitespace).count > 1 else { return developerCleaned }
         onGrammarStatus?("Polishing transcript locally…")
-        let corrected = await grammarCorrector.correct(transcript)
+        let corrected = await grammarCorrector.correct(developerCleaned)
         onGrammarStatus?("Finishing…")
-        return corrected
+        return developerCleanupEnabled
+            ? DeveloperTextCleanup.apply(corrected, profile: profile)
+            : corrected
     }
 
     private func prepare(download: Bool) async {
@@ -1161,6 +1175,8 @@ private enum TextInsertion {
     struct Context {
         let focusedElement: AXUIElement?
         let processIdentifier: pid_t
+        let applicationName: String?
+        let bundleIdentifier: String?
     }
 
     static func captureContext() -> Context? {
@@ -1184,7 +1200,12 @@ private enum TextInsertion {
                 focusedElement = candidate
             }
         }
-        return Context(focusedElement: focusedElement, processIdentifier: processIdentifier)
+        return Context(
+            focusedElement: focusedElement,
+            processIdentifier: processIdentifier,
+            applicationName: application.localizedName,
+            bundleIdentifier: application.bundleIdentifier
+        )
     }
 
     static func paste(into context: Context) -> Bool {
@@ -1394,6 +1415,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         model.setGrammarCorrection = { [weak self] enabled in
             self?.transcriber.setGrammarCorrectionEnabled(enabled)
         }
+        model.setDeveloperCleanup = { [weak self] enabled in
+            self?.transcriber.setDeveloperCleanupEnabled(enabled)
+        }
         model.refresh = { [weak self] in self?.refreshSetupModel() }
         model.complete = { [weak self] in
             UserDefaults.standard.set(true, forKey: "completedOnboarding")
@@ -1459,6 +1483,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             self?.refreshSetupModel()
         }
         setupModel.grammarCorrectionEnabled = transcriber.grammarCorrectionEnabled
+        setupModel.developerCleanupEnabled = transcriber.developerCleanupEnabled
         transcriber.onGrammarStatus = { [weak self] status in
             self?.recordingHUD.showFinishingStatus(status)
             self?.showStatus(status)
@@ -1790,6 +1815,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         recordingLimitTimer?.invalidate()
         recordingLimitTimer = nil
         textInsertionContext = TextInsertion.captureContext()
+        let developerProfile = textInsertionContext.map {
+            DeveloperAppProfile.infer(
+                bundleIdentifier: $0.bundleIdentifier,
+                applicationName: $0.applicationName
+            )
+        } ?? .general
         state = .finishing
         inputMonitor?.stopMouseTracking()
         refreshMicrophoneMenu()
@@ -1807,7 +1838,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             Task {
                 defer { try? FileManager.default.removeItem(at: audioURL) }
                 do {
-                    transcript = try await transcriber.transcribe(audioURL)
+                    transcript = try await transcriber.transcribe(audioURL, profile: developerProfile)
                     await waitForCaptures()
                     finishSession()
                 } catch {

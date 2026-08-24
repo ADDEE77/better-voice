@@ -4,6 +4,14 @@ Voice dictation with the screen context you point at.
 
 BetterVoice is an experimental, open-source macOS menu-bar app. It transcribes speech locally and captures the full screen whenever you circle something with your pointer, leaving a restrained blue highlight around the referenced area.
 
+<p>
+  <a href="https://buymeacoffee.com/taratdev">
+    <img src="docs/assets/buy-me-a-coffee.svg" alt="Buy me a coffee" height="52">
+  </a>
+</p>
+
+If you enjoy BetterVoice or any of my other experiments, a coffee helps support future projects. ❤️
+
 ![BetterVoice onboarding and visual capture preview](docs/assets/bettervoice-onboarding.png)
 
 ## Use it
@@ -21,6 +29,10 @@ Each circle captures the complete display beneath the pointer. Multiple circles 
 Grammar cleanup is off by default. To try the beta, open **Getting Started…**, turn on **Grammar cleanup (Beta)**, and press **Download**. BetterVoice then runs each transcript through the tiny, English-focused [`t5-tiny-gec-hone`](https://huggingface.co/rabden/t5-tiny-gec-hone) model. Its quantized ONNX weights and tokenizer are about 36 MB, stored in `~/Library/Application Support/BetterVoice`, and run locally. When enabled, BetterVoice preloads the cached model in the background after launch so the first recording does not pay the initialization cost. The status bar shows “Polishing transcript locally…” while this step runs. If the model cannot download, exceeds its context limit, or returns an incomplete result, BetterVoice keeps the raw transcript so recording still completes.
 
 This is intentionally experimental: the model fixes capitalization, punctuation, and sentence structure, and it can occasionally change wording. Delete the `t5-tiny-gec-hone` folder to force a fresh download.
+
+## Developer vocabulary (Beta)
+
+The branch experiment also includes a fast, zero-download developer pass inspired by [WhisperDictation](https://github.com/sam-pop/WhisperDictation) and [Dictate](https://github.com/0xbrando/dictate). It fixes common casing such as `github` → `GitHub`, `javascript` → `JavaScript`, and `json` → `JSON`, and recognizes spoken acronyms such as “n p m” in terminals and editors. It preserves the transcript’s wording and runs locally in milliseconds. The pass is enabled by default in this branch and can be turned off from **Getting Started…**. The generic grammar model remains an independent, opt-in beta.
 
 ## Download
 
@@ -105,5 +117,3 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the implementation map.
 Current scope: English transcription, Apple Silicon macOS 14+, and an experimental downloadable release. The release is not notarized with a Developer ID certificate yet. Circle recognition is intentionally forgiving; you do not need to draw a perfect circle.
 
 Inspired by the fluidity of Wispr Flow. BetterVoice is not affiliated with Wispr Flow.
-
-If BetterVoice is useful, you can [buy me a coffee](https://buymeacoffee.com/taratdev) to support this and future experiments.
