@@ -4,7 +4,7 @@ public enum RecordingSoundCue: Equatable {
 
     public var systemSoundName: String {
         switch self {
-        case .started: "Tink"
+        case .started: "Purr"
         case .finished: "Pop"
         }
     }
