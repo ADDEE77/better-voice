@@ -73,7 +73,7 @@ Open the menu-bar icon and choose **Getting Started…**. It shows the live stat
 
 ## Clipboard behavior
 
-macOS lets one clipboard contain text, rich text, and image representations, but each destination decides which representation to accept. BetterVoice therefore attempts direct transcript insertion and also writes text plus separate PNG/TIFF image items to the clipboard. In attachment-aware editors, press `⌘V` once after recording to attach the images.
+macOS lets one clipboard contain text, rich text, and image representations, but each destination decides which representation to accept. BetterVoice captures the focused app at recording start, attempts direct transcript insertion, and automatically falls back to a text-only `⌘V` in that app when Accessibility cannot address the field. It then restores the full text-plus-image clipboard, so you can still attach context manually when needed.
 
 ## Privacy and storage
 
