@@ -24,6 +24,17 @@ If you enjoy BetterVoice or any of my other experiments, a coffee helps support 
 
 Each circle captures the complete display beneath the pointer. Multiple circles produce screenshots in the same order you referenced them.
 
+## Dictation language
+
+BetterVoice dictates in English by default and nothing about that flow changed. Pick another language under **Dictation Language** in the menu bar, or in **Getting Started…**.
+
+English keeps the English-only Parakeet model it has always used, so an existing install downloads nothing new and its transcription is unchanged. Choosing any other language pulls the multilingual model instead, a separate one-time download of roughly the same size. Switching back to English returns to the model already on disk.
+
+Two things follow from the language you pick:
+
+- Grammar cleanup stays English only, and is skipped and greyed out while another language is selected. The model behind it is trained on English; run over another language it rewrites correct sentences into broken ones rather than declining.
+- A script hint goes to the decoder, which keeps a Cyrillic or Greek transcript from picking up stray Latin tokens. Between two Latin-script languages the hint does nothing, which is also why English technical terms still come through while you dictate in another Latin-script language.
+
 ## Grammar cleanup (Beta)
 
 Grammar cleanup is off by default. To try the beta, open **Getting Started…**, turn on **Grammar cleanup (Beta)**, and press **Download**. BetterVoice then runs each transcript through the tiny, English-focused [`t5-tiny-gec-hone`](https://huggingface.co/rabden/t5-tiny-gec-hone) model. Its quantized ONNX weights and tokenizer are about 36 MB, stored in `~/Library/Application Support/BetterVoice`, and run locally. When enabled, BetterVoice preloads the cached model in the background after launch so the first recording does not pay the initialization cost. The status bar shows “Polishing transcript locally…” while this step runs. If the model cannot download, exceeds its context limit, or returns an incomplete result, BetterVoice keeps the raw transcript so recording still completes.
@@ -141,6 +152,6 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the implementation map.
 
 New to the project? Start with the [contribution guide](CONTRIBUTING.md). It covers the local setup, test command, architecture boundaries, and the kinds of changes that are useful to BetterVoice.
 
-Current scope: English transcription, Apple Silicon macOS 14+, and an experimental downloadable release. The release is not notarized with a Developer ID certificate yet. Circle recognition is intentionally forgiving; you do not need to draw a perfect circle.
+Current scope: English transcription by default with other languages behind the picker, Apple Silicon macOS 14+, and an experimental downloadable release. The release is not notarized with a Developer ID certificate yet. Circle recognition is intentionally forgiving; you do not need to draw a perfect circle.
 
 Inspired by the fluidity of Wispr Flow. BetterVoice is not affiliated with Wispr Flow.

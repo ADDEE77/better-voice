@@ -1,4 +1,5 @@
 import AppKit
+import BetterVoiceCore
 import SwiftUI
 
 struct SetupMicrophoneOption: Identifiable, Equatable {
@@ -24,6 +25,8 @@ final class SetupModel: ObservableObject {
     @Published var grammarBusy = false
     @Published var developerCleanupEnabled = true
     @Published var grammarSelectionEnabled = true
+    @Published var transcriptionLanguage = TranscriptionLanguage.english
+    @Published var languageSelectionEnabled = true
 
     var requestMicrophone: () -> Void = {}
     var chooseMicrophone: (String) -> Void = { _ in }
@@ -33,6 +36,7 @@ final class SetupModel: ObservableObject {
     var downloadGrammarModel: () -> Void = {}
     var setGrammarCorrection: (Bool) -> Void = { _ in }
     var setDeveloperCleanup: (Bool) -> Void = { _ in }
+    var setTranscriptionLanguage: (TranscriptionLanguage) -> Void = { _ in }
     var refresh: () -> Void = {}
     var complete: () -> Void = {}
 
@@ -138,13 +142,17 @@ struct SetupView: View {
                         busy: model.modelBusy,
                         action: model.downloadModel
                     )
+                    LanguageSetupRow(model: model)
                     GrammarSetupRow(
                         title: "Grammar cleanup (Beta)",
                         detail: "t5-tiny-gec-hone runs locally after transcription to fix punctuation and sentence structure. It falls back to the raw transcript if unavailable.",
-                        status: model.grammarStatus,
-                        ready: model.grammarReady,
+                        status: model.transcriptionLanguage.allowsGrammarCorrection
+                            ? model.grammarStatus
+                            : "English only. Skipped while dictating \(model.transcriptionLanguage.name).",
+                        ready: model.grammarReady && model.transcriptionLanguage.allowsGrammarCorrection,
                         busy: model.grammarBusy,
-                        selectionEnabled: model.grammarSelectionEnabled,
+                        selectionEnabled: model.grammarSelectionEnabled
+                            && model.transcriptionLanguage.allowsGrammarCorrection,
                         download: model.downloadGrammarModel,
                         isEnabled: Binding(
                             get: { model.grammarCorrectionEnabled },
@@ -226,6 +234,44 @@ private struct MicrophoneSetupRow: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+}
+
+private struct LanguageSetupRow: View {
+    @ObservedObject var model: SetupModel
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "globe")
+                .foregroundStyle(Color.secondary)
+                .font(.title3)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Dictation language").fontWeight(.medium)
+                Text(model.transcriptionLanguage.usesEnglishOnlyModel
+                     ? "English uses the model you already downloaded."
+                     : "Other languages use the multilingual model, a separate one-time download.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Picker("Dictation language", selection: Binding(
+                get: { model.transcriptionLanguage },
+                set: {
+                    model.transcriptionLanguage = $0
+                    model.setTranscriptionLanguage($0)
+                }
+            )) {
+                ForEach(TranscriptionLanguage.all, id: \.self) { language in
+                    Text(language.name).tag(language)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 260)
+            .disabled(!model.languageSelectionEnabled)
+            .accessibilityLabel("Dictation language")
         }
     }
 }
