@@ -348,8 +348,10 @@ private final class AudioRecorder {
             .appendingPathComponent("BetterVoice-\(getpid())-\(UUID().uuidString).caf")
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
         let levelHandler = onLevel
+        let recordingReadyAt = ProcessInfo.processInfo.systemUptime + 0.2
 
         inputNode.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, _ in
+            guard ProcessInfo.processInfo.systemUptime >= recordingReadyAt else { return }
             try? file.write(from: buffer)
             guard let samples = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return }
             var sum: Float = 0
@@ -858,6 +860,18 @@ private final class RecordingHUDController {
 }
 
 @MainActor
+private final class RecordingSoundController {
+    private var sound: NSSound?
+
+    func play(_ cue: RecordingSoundCue) {
+        sound?.stop()
+        sound = NSSound(named: cue.systemSoundName)
+        sound?.volume = 0.35
+        sound?.play()
+    }
+}
+
+@MainActor
 private enum SessionStorage {
     static let maxAge: TimeInterval = 7 * 24 * 60 * 60
     static let maxBytes: Int64 = 500 * 1_024 * 1_024
@@ -1258,12 +1272,14 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     private let transcriber = LocalTranscriber()
     private let trailOverlay = TrailOverlayController()
     private let recordingHUD = RecordingHUDController()
+    private let recordingSounds = RecordingSoundController()
     private let setupWindow = SetupWindowController()
     private let recoveryNotice = RecoveryNoticeController()
     private var inputMonitor: InputMonitor?
     private var detector = CircleGestureDetector()
     private var output: SessionOutput?
     private var transcript = ""
+    private var recordingStartedAt: TimeInterval?
     private var state = SessionState.idle
     private var recordingMode: RecordingMode?
     private var statusMenuItem: NSMenuItem?
@@ -1573,10 +1589,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             textInsertionTarget = nil
             detector.reset()
             transcript = ""
+            recordingSounds.play(.started)
             try recorder.start(device: selectedMicrophone)
             textInsertionTarget = TextInsertion.captureTarget()
             state = .recording
             recordingMode = mode
+            recordingStartedAt = ProcessInfo.processInfo.systemUptime
             inputMonitor?.startMouseTracking()
             let timer = Timer(timeInterval: 20 * 60, repeats: false) { [weak self] _ in
                 DispatchQueue.main.async { [weak self] in
@@ -1603,6 +1621,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         } catch {
             output?.discard()
             output = nil
+            recordingStartedAt = nil
             recordingMode = nil
             showError(error.localizedDescription)
         }
@@ -1625,6 +1644,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         updateMenuTitle("Finishing… (⌘⌥)", enabled: false)
         do {
             let audioURL = try recorder.stop()
+            recordingSounds.play(.finished)
             Task {
                 defer { try? FileManager.default.removeItem(at: audioURL) }
                 do {
@@ -1647,6 +1667,36 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     private func finishSession(transcriptionError: Error? = nil) {
         let session = output
         let hadTranscript = !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasContext = !(session?.images.isEmpty ?? true)
+        let elapsed = recordingStartedAt.map { ProcessInfo.processInfo.systemUptime - $0 } ?? 0
+        let disposition = sessionCompletionDisposition(
+            hasTranscript: hadTranscript,
+            hasContext: hasContext,
+            duration: elapsed
+        )
+        if disposition != .deliver, let session {
+            switch disposition {
+            case .discardAccidental:
+                session.discard()
+            case .saveEmpty:
+                do {
+                    _ = try session.finish(transcript: transcript, target: textInsertionTarget)
+                } catch {
+                    session.discard()
+                }
+            case .deliver:
+                break
+            }
+            finishRecordingUI()
+            showStatus(
+                disposition == .discardAccidental
+                    ? "Recording discarded"
+                    : "No speech or screen context captured",
+                resetAfter: 4
+            )
+            pruneSavedSessions()
+            return
+        }
         do {
             guard let session else { throw BetterVoiceError.sessionUnavailable }
             let result = try session.finish(
@@ -1654,15 +1704,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
                 target: textInsertionTarget
             )
             let hasContext = !session.images.isEmpty
-            output = nil
-            textInsertionTarget = nil
-            state = .idle
-            recordingMode = nil
-            recordingHUD.hide()
-            refreshMicrophoneMenu()
-            refreshModelMenu()
-            setStatusIcon(.idle)
-            updateMenuTitle("Start long recording (⌘⌥)", enabled: true)
+            finishRecordingUI()
 
             if let transcriptionError {
                 let delivery = result.clipboardCopied
@@ -1686,21 +1728,26 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             }
             pruneSavedSessions()
         } catch {
-            output = nil
-            textInsertionTarget = nil
-            state = .idle
-            recordingMode = nil
-            recordingHUD.hide()
-            refreshMicrophoneMenu()
-            refreshModelMenu()
-            setStatusIcon(.idle)
-            updateMenuTitle("Start long recording (⌘⌥)", enabled: true)
+            finishRecordingUI()
             if let transcriptionError {
                 showError("Transcription failed: \(transcriptionError.localizedDescription); session save failed: \(error.localizedDescription)")
             } else {
                 showError(error.localizedDescription)
             }
         }
+    }
+
+    private func finishRecordingUI() {
+        output = nil
+        textInsertionTarget = nil
+        recordingStartedAt = nil
+        state = .idle
+        recordingMode = nil
+        recordingHUD.hide()
+        refreshMicrophoneMenu()
+        refreshModelMenu()
+        setStatusIcon(.idle)
+        updateMenuTitle("Start long recording (⌘⌥)", enabled: true)
     }
 
     private func handleMouse(quartzPoint: CGPoint) {
@@ -1926,6 +1973,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             }
             output?.discard()
             output = nil
+            recordingStartedAt = nil
             state = .idle
         }
     }

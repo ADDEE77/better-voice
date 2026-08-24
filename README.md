@@ -10,6 +10,7 @@ BetterVoice is an experimental, open-source macOS menu-bar app. It transcribes s
 
 - Hold `⌥` for a quick note. Recording starts after a short hold and finishes when you release.
 - Press `⌘⌥` for a long explanation. Press it again to finish.
+- A soft native sound confirms when listening starts and when it stops.
 - While recording, circle any important UI with the pointer. A blue trail follows your movement and a pulse confirms each capture.
 - BetterVoice inserts the transcript into the selected text field when macOS allows it, then copies the transcript and captured images to the clipboard.
 
@@ -49,6 +50,7 @@ Open the menu-bar icon and choose **Getting Started…**. It shows the live stat
 - **Transcript is not inserted:** enable **Accessibility**. The transcript remains on the clipboard and in the saved session when the target app blocks direct insertion.
 - **Wrong microphone:** choose the device under **Microphone** in the menu-bar menu.
 - **Model download failed:** reopen **Getting Started…** and retry from the model row.
+- **Accidental empty recording:** a session shorter than 2.5 seconds with no speech or circles is discarded quietly. Longer empty sessions are saved without opening an error dialog.
 
 ## Clipboard behavior
 
