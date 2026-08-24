@@ -44,7 +44,7 @@ The script builds, signs, and opens `.build/BetterVoice.app`. BetterVoice then w
 3. Accessibility permission for returning text to the selected field
 4. The one-time local Parakeet model download (~500 MB)
 
-Automatic microphone selection prefers a connected external input and falls back to the system input. You can choose a specific device from the menu bar.
+Automatic microphone selection prefers a connected external input and falls back to the system input. You can choose a specific device during setup or from the menu bar.
 
 To keep macOS permissions attached to the same identity across rebuilds, explicitly select your certificate when needed:
 

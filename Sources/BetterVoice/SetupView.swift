@@ -1,17 +1,25 @@
 import AppKit
 import SwiftUI
 
+struct SetupMicrophoneOption: Identifiable, Equatable {
+    let id: String
+    let name: String
+}
+
 @MainActor
 final class SetupModel: ObservableObject {
     @Published var microphoneGranted = false
     @Published var screenGranted = false
     @Published var accessibilityGranted = false
     @Published var microphoneName = "Checking…"
+    @Published var microphoneOptions: [SetupMicrophoneOption] = []
+    @Published var selectedMicrophoneID = "automatic"
     @Published var modelStatus = "Checking…"
     @Published var modelReady = false
     @Published var modelBusy = false
 
     var requestMicrophone: () -> Void = {}
+    var chooseMicrophone: (String) -> Void = { _ in }
     var requestScreen: () -> Void = {}
     var requestAccessibility: () -> Void = {}
     var downloadModel: () -> Void = {}
@@ -49,12 +57,7 @@ struct SetupView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Setup")
                     .font(.headline)
-                SetupRow(
-                    title: "Microphone",
-                    detail: model.microphoneGranted ? model.microphoneName : "Needed to record your voice",
-                    ready: model.microphoneGranted,
-                    action: model.requestMicrophone
-                )
+                MicrophoneSetupRow(model: model)
                 SetupRow(
                     title: "Screen Recording",
                     detail: model.screenGranted ? "Ready to capture circles" : "Needed only when you circle the screen",
@@ -89,6 +92,45 @@ struct SetupView: View {
         .padding(28)
         .frame(width: 720)
         .onAppear { model.refresh() }
+    }
+}
+
+private struct MicrophoneSetupRow: View {
+    @ObservedObject var model: SetupModel
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: model.microphoneGranted ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(model.microphoneGranted ? Color.green : Color.secondary)
+                .font(.title3)
+                .accessibilityLabel(model.microphoneGranted ? "Ready" : "Needs setup")
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Microphone").fontWeight(.medium)
+                Text(model.microphoneGranted ? model.microphoneName : "Needed to record your voice")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if model.microphoneGranted && !model.microphoneOptions.isEmpty {
+                Picker("Microphone", selection: Binding(
+                    get: { model.selectedMicrophoneID },
+                    set: { model.chooseMicrophone($0) }
+                )) {
+                    ForEach(model.microphoneOptions) { option in
+                        Text(option.name).tag(option.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 260)
+                .accessibilityLabel("Microphone input")
+            } else if !model.microphoneGranted {
+                Button("Set Up", action: model.requestMicrophone)
+            } else {
+                Text("No inputs found")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }
 

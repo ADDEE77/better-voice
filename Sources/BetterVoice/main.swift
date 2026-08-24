@@ -1296,6 +1296,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     private lazy var setupModel: SetupModel = {
         let model = SetupModel()
         model.requestMicrophone = { [weak self] in self?.requestMicrophoneAuthorization() }
+        model.chooseMicrophone = { [weak self] id in
+            guard id == "automatic" || !id.isEmpty else { return }
+            self?.selectMicrophone(uid: id == "automatic" ? nil : id)
+        }
         model.requestScreen = { [weak self] in self?.requestScreenCaptureAuthorization() }
         model.requestAccessibility = { [weak self] in self?.requestTextInsertionAuthorization() }
         model.downloadModel = { [weak self] in self?.downloadModel() }
@@ -1436,9 +1440,15 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     }
 
     @objc private func selectMicrophone(_ sender: NSMenuItem) {
+        selectMicrophone(uid: sender.representedObject as? String)
+    }
+
+    private func selectMicrophone(uid: String?) {
         guard state == .idle else { return }
-        microphones.select(uid: sender.representedObject as? String)
+        microphones.select(uid: uid)
+        microphones.refresh()
         refreshMicrophoneMenu()
+        refreshSetupModel()
         showStatus("Microphone: \(microphones.selectedLabel)", resetAfter: 3)
     }
 
@@ -1476,6 +1486,18 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         setupModel.accessibilityGranted = AXIsProcessTrusted()
         microphones.refresh()
         setupModel.microphoneName = microphones.selectedLabel
+        setupModel.selectedMicrophoneID = microphones.selectedUID ?? "automatic"
+        setupModel.microphoneOptions = [
+            SetupMicrophoneOption(
+                id: "automatic",
+                name: "Automatic"
+            )
+        ] + microphones.devices.map { device in
+            SetupMicrophoneOption(
+                id: device.uid,
+                name: device.name
+            )
+        }
         switch transcriber.state {
         case .missing:
             setupModel.modelStatus = "Download once (~500 MB); transcription stays on this Mac"
