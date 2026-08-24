@@ -365,7 +365,7 @@ private final class AudioRecorder {
     }
 
     func start(device: MicrophoneDevice) throws {
-        precondition(engine == nil)
+        guard engine == nil else { throw BetterVoiceError.sessionUnavailable }
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
         guard let audioUnit = inputNode.audioUnit else {
@@ -396,7 +396,9 @@ private final class AudioRecorder {
         inputNode.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, _ in
             guard ProcessInfo.processInfo.systemUptime >= recordingReadyAt else { return }
             try? file.write(from: buffer)
-            guard let samples = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return }
+            guard buffer.format.channelCount > 0,
+                  let samples = buffer.floatChannelData?[0],
+                  buffer.frameLength > 0 else { return }
             var sum: Float = 0
             for index in 0..<Int(buffer.frameLength) {
                 sum += samples[index] * samples[index]
@@ -618,6 +620,7 @@ private final class TrailOverlayView: NSView {
             times: trail.map(\.time)
         )
         for segment in segments {
+            guard trail.indices.contains(segment.from), trail.indices.contains(segment.to) else { continue }
             let previous = trail[segment.from]
             let current = trail[segment.to]
             let age = max(0, now - current.time)
@@ -1173,7 +1176,8 @@ private enum TextInsertion {
             kAXFocusedUIElementAttribute as CFString,
             &focused
         ) == .success, let focused {
-            let candidate = focused as! AXUIElement
+            guard CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+            let candidate = unsafeDowncast(focused, to: AXUIElement.self)
             var focusedProcessIdentifier: pid_t = 0
             if AXUIElementGetPid(candidate, &focusedProcessIdentifier) == .success,
                focusedProcessIdentifier == processIdentifier {
