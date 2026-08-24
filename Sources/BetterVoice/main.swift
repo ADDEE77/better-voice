@@ -914,7 +914,7 @@ private final class RecordingHUDController {
     func showFinishingStatus(_ message: String) {
         guard view.isFinishing else { return }
         view.finishingMessage = message
-        view.setAccessibilityLabel("BetterVoice (message)")
+        view.setAccessibilityLabel("BetterVoice \(message)")
         view.needsDisplay = true
     }
 
