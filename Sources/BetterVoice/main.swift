@@ -231,11 +231,26 @@ private enum LocalModelState: Equatable {
     case failed(String)
 }
 
+private enum GrammarModelState: Equatable {
+    case missing
+    case downloading
+    case ready
+    case failed(String)
+}
+
 @MainActor
 private final class LocalTranscriber {
+    private static let grammarCorrectionKey = "grammarCorrectionEnabled"
     private(set) var state: LocalModelState = .missing
+    private(set) var grammarModelState: GrammarModelState = .missing
     private var manager: AsrManager?
+    private let grammarCorrector = GrammarCorrector()
     var onStateChange: (() -> Void)?
+    var onGrammarStatus: ((String) -> Void)?
+
+    var grammarCorrectionEnabled: Bool {
+        UserDefaults.standard.object(forKey: Self.grammarCorrectionKey) as? Bool ?? false
+    }
 
     var isDownloaded: Bool {
         AsrModels.modelsExist(
@@ -256,10 +271,38 @@ private final class LocalTranscriber {
         await prepare(download: true)
     }
 
+    func setGrammarCorrectionEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: Self.grammarCorrectionKey)
+    }
+
+    func loadCachedGrammarModel() async {
+        grammarModelState = await grammarCorrector.isCached() ? .ready : .missing
+        onStateChange?()
+    }
+
+    func prewarmGrammarModel() async {
+        guard grammarCorrectionEnabled, grammarModelState != .ready else { return }
+        await downloadGrammarModel()
+    }
+
+    func downloadGrammarModel() async {
+        guard grammarModelState != .downloading else { return }
+        grammarModelState = .downloading
+        onStateChange?()
+        grammarModelState = await grammarCorrector.preload() ? .ready : .failed("retry from Getting Started")
+        onStateChange?()
+    }
+
     func transcribe(_ url: URL) async throws -> String {
         guard let manager else { throw BetterVoiceError.localModelUnavailable }
         var decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
-        return try await manager.transcribe(url, decoderState: &decoderState).text
+        let transcript = try await manager.transcribe(url, decoderState: &decoderState).text
+        guard grammarCorrectionEnabled else { return transcript }
+        guard transcript.split(whereSeparator: \.isWhitespace).count > 1 else { return transcript }
+        onGrammarStatus?("Polishing transcript locally…")
+        let corrected = await grammarCorrector.correct(transcript)
+        onGrammarStatus?("Finishing…")
+        return corrected
     }
 
     private func prepare(download: Bool) async {
@@ -722,6 +765,7 @@ private final class RecordingHUDView: NSView {
     var level: Float = 0
     var contextCount = 0
     var isFinishing = false
+    var finishingMessage = "Transcribing…"
     var captureMessage: String?
     var reduceMotion = false
 
@@ -741,7 +785,7 @@ private final class RecordingHUDView: NSView {
             NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2).fill()
         }
 
-        let title = captureMessage ?? (isFinishing ? "Transcribing…" : "Listening")
+        let title = captureMessage ?? (isFinishing ? finishingMessage : "Listening")
         let detail = contextCount > 0 ? "\(microphone)  •  \(contextCount) captured" : microphone
         (title as NSString).draw(
             at: NSPoint(x: 62, y: 10),
@@ -844,8 +888,16 @@ private final class RecordingHUDController {
         captureTimer = nil
         view.captureMessage = nil
         view.isFinishing = true
+        view.finishingMessage = "Transcribing…"
         view.level = 0.2
         view.setAccessibilityLabel("BetterVoice transcribing")
+        view.needsDisplay = true
+    }
+
+    func showFinishingStatus(_ message: String) {
+        guard view.isFinishing else { return }
+        view.finishingMessage = message
+        view.setAccessibilityLabel("BetterVoice (message)")
         view.needsDisplay = true
     }
 
@@ -963,7 +1015,7 @@ private final class SessionOutput {
 
     func finish(
         transcript: String,
-        target: AXUIElement?
+        insertionContext: TextInsertion.Context?
     ) throws -> (markdownURL: URL, clipboardCopied: Bool, transcriptInserted: Bool) {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         var markdown = "# BetterVoice session\n\n"
@@ -976,9 +1028,27 @@ private final class SessionOutput {
         }
         let markdownURL = folder.appendingPathComponent("context.md")
         try markdown.write(to: markdownURL, atomically: true, encoding: .utf8)
-        let transcriptInserted = !trimmed.isEmpty && TextInsertion.insert(trimmed, into: target)
-        let clipboardCopied = Clipboard.copy(transcript: trimmed, images: images)
-        return (markdownURL, clipboardCopied, transcriptInserted)
+        guard !trimmed.isEmpty,
+              let insertionContext,
+              Clipboard.copyTextOnly(trimmed)
+        else {
+            return (markdownURL, Clipboard.copy(transcript: trimmed, images: images), false)
+        }
+
+        let pasteboardChangeCount = NSPasteboard.general.changeCount
+        guard TextInsertion.paste(into: insertionContext) else {
+            return (markdownURL, Clipboard.copy(transcript: trimmed, images: images), false)
+        }
+
+        if !images.isEmpty {
+            let transcriptToRestore = trimmed
+            let imagesToRestore = images
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                guard NSPasteboard.general.changeCount == pasteboardChangeCount else { return }
+                _ = Clipboard.copy(transcript: transcriptToRestore, images: imagesToRestore)
+            }
+        }
+        return (markdownURL, true, true)
     }
 }
 
@@ -1025,7 +1095,7 @@ private enum Clipboard {
         return true
     }
 
-    private static func copyTextOnly(_ transcript: String) -> Bool {
+    static func copyTextOnly(_ transcript: String) -> Bool {
         guard !transcript.isEmpty else { return false }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -1035,94 +1105,57 @@ private enum Clipboard {
 
 @MainActor
 private enum TextInsertion {
-    static func captureTarget() -> AXUIElement? {
-        let application = NSWorkspace.shared.frontmostApplication
-        guard application?.bundleIdentifier != Bundle.main.bundleIdentifier else { return nil }
-        guard let processIdentifier = application?.processIdentifier else { return nil }
-        return target(in: processIdentifier)
+    struct Context {
+        let focusedElement: AXUIElement?
+        let processIdentifier: pid_t
     }
 
-    private static func target(in processIdentifier: pid_t) -> AXUIElement? {
-        let applicationElement = AXUIElementCreateApplication(processIdentifier)
-        var queue = [applicationElement]
-        var index = 0
-        var editableElements: [AXUIElement] = []
-        while index < queue.count, index < 2_000 {
-            let element = queue[index]
-            index += 1
-            if isEditable(element) {
-                var focused: CFTypeRef?
-                _ = AXUIElementCopyAttributeValue(
-                    element,
-                    kAXFocusedAttribute as CFString,
-                    &focused
-                )
-                if focused as? Bool == true { return element }
-                editableElements.append(element)
-            }
-
-            var children: CFTypeRef?
-            if AXUIElementCopyAttributeValue(
-                element,
-                kAXChildrenAttribute as CFString,
-                &children
-            ) == .success, let children = children as? [AXUIElement] {
-                queue.append(contentsOf: children)
+    static func captureContext() -> Context? {
+        guard let application = NSWorkspace.shared.frontmostApplication,
+              application.bundleIdentifier != Bundle.main.bundleIdentifier
+        else { return nil }
+        let processIdentifier = application.processIdentifier
+        let systemWideElement = AXUIElementCreateSystemWide()
+        var focused: CFTypeRef?
+        var focusedElement: AXUIElement?
+        if AXUIElementCopyAttributeValue(
+            systemWideElement,
+            kAXFocusedUIElementAttribute as CFString,
+            &focused
+        ) == .success, let focused {
+            let candidate = focused as! AXUIElement
+            var focusedProcessIdentifier: pid_t = 0
+            if AXUIElementGetPid(candidate, &focusedProcessIdentifier) == .success,
+               focusedProcessIdentifier == processIdentifier {
+                focusedElement = candidate
             }
         }
-        return editableElements.count == 1 ? editableElements[0] : nil
+        return Context(focusedElement: focusedElement, processIdentifier: processIdentifier)
     }
 
-    static func insert(_ text: String, into target: AXUIElement?) -> Bool {
-        guard !text.isEmpty, let target, CGPreflightPostEventAccess() else { return false }
-        var processIdentifier: pid_t = 0
-        guard AXUIElementGetPid(target, &processIdentifier) == .success,
-              let application = NSRunningApplication(processIdentifier: processIdentifier),
-              application.activate()
+    static func paste(into context: Context) -> Bool {
+        guard CGPreflightPostEventAccess(),
+              let application = NSRunningApplication(processIdentifier: context.processIdentifier),
+              application.bundleIdentifier != Bundle.main.bundleIdentifier
         else { return false }
-        guard AXUIElementSetAttributeValue(
-            target,
-            kAXFocusedAttribute as CFString,
-            kCFBooleanTrue
-        ) == .success else { return false }
+
+        if let focusedElement = context.focusedElement {
+            _ = AXUIElementSetAttributeValue(
+               focusedElement,
+               kAXFocusedAttribute as CFString,
+               kCFBooleanTrue
+            )
+        }
 
         let source = CGEventSource(stateID: .hidSystemState)
-        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
         else { return false }
-        let characters = Array(text.utf16)
-        characters.withUnsafeBufferPointer {
-            keyDown.keyboardSetUnicodeString(
-                stringLength: $0.count,
-                unicodeString: $0.baseAddress
-            )
-            keyUp.keyboardSetUnicodeString(
-                stringLength: $0.count,
-                unicodeString: $0.baseAddress
-            )
-        }
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
+        keyDown.flags = .maskCommand
+        keyUp.flags = .maskCommand
+        keyDown.postToPid(context.processIdentifier)
+        keyUp.postToPid(context.processIdentifier)
         return true
-    }
-
-    private static func isEditable(_ element: AXUIElement) -> Bool {
-        var role: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            kAXRoleAttribute as CFString,
-            &role
-        ) == .success,
-        let role = role as? String,
-        role == "AXTextArea" || role == "AXTextField"
-        else { return false }
-
-        var settable = DarwinBoolean(false)
-        return AXUIElementIsAttributeSettable(
-            element,
-            kAXSelectedTextAttribute as CFString,
-            &settable
-        ) == .success && settable.boolValue
     }
 }
 
@@ -1290,7 +1323,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     private var statusFeedbackTimer: Timer?
     private var recordingLimitTimer: Timer?
     private var captureTasks: [Task<Void, Never>] = []
-    private var textInsertionTarget: AXUIElement?
+    private var textInsertionContext: TextInsertion.Context?
     private var statusPulse = false
     private var reduceMotion = false
     private lazy var setupModel: SetupModel = {
@@ -1303,6 +1336,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         model.requestScreen = { [weak self] in self?.requestScreenCaptureAuthorization() }
         model.requestAccessibility = { [weak self] in self?.requestTextInsertionAuthorization() }
         model.downloadModel = { [weak self] in self?.downloadModel() }
+        model.downloadGrammarModel = { [weak self] in self?.downloadGrammarModel() }
+        model.setGrammarCorrection = { [weak self] enabled in
+            self?.transcriber.setGrammarCorrectionEnabled(enabled)
+        }
         model.refresh = { [weak self] in self?.refreshSetupModel() }
         model.complete = { [weak self] in
             UserDefaults.standard.set(true, forKey: "completedOnboarding")
@@ -1367,8 +1404,17 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             self?.refreshModelMenu()
             self?.refreshSetupModel()
         }
-            recorder.onLevel = { [weak self] level in self?.recordingHUD.update(level: level) }
-        Task { await transcriber.loadCachedModel() }
+        setupModel.grammarCorrectionEnabled = transcriber.grammarCorrectionEnabled
+        transcriber.onGrammarStatus = { [weak self] status in
+            self?.recordingHUD.showFinishingStatus(status)
+            self?.showStatus(status)
+        }
+        recorder.onLevel = { [weak self] level in self?.recordingHUD.update(level: level) }
+        Task {
+            await transcriber.loadCachedModel()
+            await transcriber.loadCachedGrammarModel()
+            await transcriber.prewarmGrammarModel()
+        }
 
         inputMonitor = InputMonitor(
             startPushToTalk: { [weak self] in self?.startPushToTalk() },
@@ -1500,6 +1546,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
                 name: device.name
             )
         }
+        setupModel.grammarSelectionEnabled = state == .idle
         switch transcriber.state {
         case .missing:
             setupModel.modelStatus = "Download once (~500 MB); transcription stays on this Mac"
@@ -1521,6 +1568,24 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             setupModel.modelStatus = "Download failed: \(message)"
             setupModel.modelReady = false
             setupModel.modelBusy = false
+        }
+        switch transcriber.grammarModelState {
+        case .missing:
+            setupModel.grammarStatus = "Download once (~36 MB) before recording"
+            setupModel.grammarReady = false
+            setupModel.grammarBusy = false
+        case .downloading:
+            setupModel.grammarStatus = "Downloading…"
+            setupModel.grammarReady = false
+            setupModel.grammarBusy = true
+        case .ready:
+            setupModel.grammarStatus = "Ready • runs locally on this Mac"
+            setupModel.grammarReady = true
+            setupModel.grammarBusy = false
+        case .failed(let message):
+            setupModel.grammarStatus = "Download failed: " + message
+            setupModel.grammarReady = false
+            setupModel.grammarBusy = false
         }
     }
 
@@ -1570,6 +1635,22 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         }
     }
 
+    private func downloadGrammarModel() {
+        guard state == .idle else { return }
+        showStatus("Downloading grammar model…")
+        Task {
+            await transcriber.downloadGrammarModel()
+            switch transcriber.grammarModelState {
+            case .ready:
+                showStatus("Grammar cleanup ready", resetAfter: 4)
+            case .failed(let message):
+                showError("Grammar model download failed", detail: message)
+            default:
+                break
+            }
+        }
+    }
+
     @objc private func toggleRecording() {
         switch state {
         case .idle:
@@ -1610,12 +1691,11 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             }
             output = try SessionOutput()
             captureTasks.removeAll(keepingCapacity: true)
-            textInsertionTarget = nil
+            textInsertionContext = nil
             detector.reset()
             transcript = ""
             recordingSounds.play(.started)
             try recorder.start(device: selectedMicrophone)
-            textInsertionTarget = TextInsertion.captureTarget()
             state = .recording
             recordingMode = mode
             recordingStartedAt = ProcessInfo.processInfo.systemUptime
@@ -1655,14 +1735,15 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         guard state == .recording else { return }
         recordingLimitTimer?.invalidate()
         recordingLimitTimer = nil
-        if let latestTarget = TextInsertion.captureTarget() {
-            textInsertionTarget = latestTarget
-        }
+        textInsertionContext = TextInsertion.captureContext()
         state = .finishing
         inputMonitor?.stopMouseTracking()
         refreshMicrophoneMenu()
         trailOverlay.stop()
         recordingHUD.showFinishing()
+        if transcriber.grammarCorrectionEnabled {
+            recordingHUD.showFinishingStatus("Polishing transcript locally…")
+        }
         setStatusIcon(.finishing)
         showStatus("Finishing…")
         updateMenuTitle("Finishing… (⌘⌥)", enabled: false)
@@ -1704,7 +1785,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
                 session.discard()
             case .saveEmpty:
                 do {
-                    _ = try session.finish(transcript: transcript, target: textInsertionTarget)
+                    _ = try session.finish(
+                        transcript: transcript,
+                        insertionContext: textInsertionContext
+                    )
                 } catch {
                     session.discard()
                 }
@@ -1725,7 +1809,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             guard let session else { throw BetterVoiceError.sessionUnavailable }
             let result = try session.finish(
                 transcript: transcript,
-                target: textInsertionTarget
+                insertionContext: textInsertionContext
             )
             let hasContext = !session.images.isEmpty
             finishRecordingUI()
@@ -1763,7 +1847,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
 
     private func finishRecordingUI() {
         output = nil
-        textInsertionTarget = nil
+        textInsertionContext = nil
         recordingStartedAt = nil
         state = .idle
         recordingMode = nil

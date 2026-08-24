@@ -16,6 +16,12 @@ BetterVoice is an experimental, open-source macOS menu-bar app. It transcribes s
 
 Each circle captures the complete display beneath the pointer. Multiple circles produce screenshots in the same order you referenced them.
 
+## Grammar cleanup (Beta)
+
+Grammar cleanup is off by default. To try the beta, open **Getting Started…**, turn on **Grammar cleanup (Beta)**, and press **Download**. BetterVoice then runs each transcript through the tiny, English-focused [`t5-tiny-gec-hone`](https://huggingface.co/rabden/t5-tiny-gec-hone) model. Its quantized ONNX weights and tokenizer are about 36 MB, stored in `~/Library/Application Support/BetterVoice`, and run locally. When enabled, BetterVoice preloads the cached model in the background after launch so the first recording does not pay the initialization cost. The status bar shows “Polishing transcript locally…” while this step runs. If the model cannot download, exceeds its context limit, or returns an incomplete result, BetterVoice keeps the raw transcript so recording still completes.
+
+This is intentionally experimental: the model fixes capitalization, punctuation, and sentence structure, and it can occasionally change wording. Delete the `t5-tiny-gec-hone` folder to force a fresh download.
+
 ## Download
 
 Download the latest Apple Silicon build from the [BetterVoice releases page](https://github.com/TarunTomar122/better-voice/releases/latest). Choose `BetterVoice-macos-arm64.zip`, unzip it, and open `BetterVoice.app`:
@@ -54,18 +60,20 @@ BETTERVOICE_SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)" ./scripts/b
 
 ## If something is not working
 
-Open the menu-bar icon and choose **Getting Started…**. It shows the live state of the microphone, Screen Recording, Accessibility, selected input, and local model. Errors stay visible in a small recovery window with a path back to setup instead of disappearing as a system beep.
+Open the menu-bar icon and choose **Getting Started…**. It shows the live state of the microphone, Screen Recording, Accessibility, selected input, local transcription model, and the grammar cleanup toggle. Errors stay visible in a small recovery window with a path back to setup instead of disappearing as a system beep.
 
 - **Shortcut does nothing:** enable **Accessibility**, confirm the local model says Ready, and make sure only one BetterVoice process is running. The build script closes the previous process before launching a rebuild.
 - **No screenshot:** enable BetterVoice in **System Settings → Privacy & Security → Screen Recording**, then quit and reopen the app. The setup screen reads the current macOS permission every time; it does not cache an old answer.
-- **Transcript is not inserted:** enable **Accessibility**. The transcript remains on the clipboard and in the saved session when the target app blocks direct insertion.
+- **Transcript is not inserted:** enable **Accessibility**. The transcript remains on the clipboard and in the saved session when the target app blocks paste events.
 - **Wrong microphone:** choose the device under **Microphone** in the menu-bar menu.
 - **Model download failed:** reopen **Getting Started…** and retry from the model row.
+- **Grammar model download failed:** reopen **Getting Started…** and retry **Download** on the grammar cleanup row.
+- **Try grammar cleanup:** turn on **Grammar cleanup (Beta)** in **Getting Started…**, then press **Download**.
 - **Accidental empty recording:** a session shorter than 2.5 seconds with no speech or circles is discarded quietly. Longer empty sessions are saved without opening an error dialog.
 
 ## Clipboard behavior
 
-macOS lets one clipboard contain text, rich text, and image representations, but each destination decides which representation to accept. BetterVoice therefore attempts direct transcript insertion and also writes text plus separate PNG/TIFF image items to the clipboard. In attachment-aware editors, press `⌘V` once after recording to attach the images.
+macOS lets one clipboard contain text, rich text, and image representations, but each destination decides which representation to accept. BetterVoice captures the focused app and field when recording stops, puts only the transcript on the clipboard, and sends one `⌘V` directly to that captured app. It then restores the full text-plus-image clipboard, so you can still attach context manually when needed.
 
 ## Privacy and storage
 
