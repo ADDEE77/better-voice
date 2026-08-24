@@ -7,16 +7,20 @@ public enum DeveloperAppProfile: String, Sendable {
     case ai
 
     public static func infer(bundleIdentifier: String?, applicationName: String?) -> Self {
-        let value = "\(bundleIdentifier ?? "") \(applicationName ?? "")".lowercased()
-        if value.contains("terminal") || value.contains("iterm") || value.contains("ghostty") ||
-            value.contains("warp") || value.contains("kitty") || value.contains("wezterm") {
+        let identifier = bundleIdentifier?.lowercased()
+        let name = applicationName?.lowercased()
+        let terminalNames = ["terminal", "iterm2", "ghostty", "warp", "kitty", "wezterm"]
+        let editorNames = ["xcode", "visual studio code", "cursor", "windsurf", "neovim"]
+        let aiNames = ["chatgpt", "claude", "codex"]
+        if name.map(terminalNames.contains) == true || identifier.map({ [
+            "com.apple.terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty"
+        ].contains($0) }) == true {
             return .terminal
         }
-        if value.contains("xcode") || value.contains("visual studio code") || value.contains("cursor") ||
-            value.contains("windsurf") || value.contains("neovim") || value.contains("code.editor") {
+        if name.map(editorNames.contains) == true || identifier.map({ ["com.apple.dt.xcode", "com.microsoft.vscode"].contains($0) }) == true {
             return .editor
         }
-        if value.contains("chatgpt") || value.contains("claude") || value.contains("codex") {
+        if name.map(aiNames.contains) == true {
             return .ai
         }
         return .general
@@ -52,6 +56,8 @@ public enum DeveloperTextCleanup {
         ("j s o n", "JSON"), ("a p i", "API"), ("c l i", "CLI"), ("s d k", "SDK")
     ]
 
+    private static let ambiguousTerms: Set<String> = ["rest", "rag", "crud", "whisper", "parakeet", "ai"]
+
     public static func apply(_ text: String, profile: DeveloperAppProfile = .general) -> String {
         guard !text.isEmpty else { return text }
         var result = text
@@ -61,6 +67,7 @@ public enum DeveloperTextCleanup {
             }
         }
         for (source, replacement) in terms {
+            guard profile != .general || !ambiguousTerms.contains(source) else { continue }
             result = replaceWholePhrase(source, with: replacement, in: result)
         }
         return result
@@ -68,7 +75,7 @@ public enum DeveloperTextCleanup {
 
     private static func replaceWholePhrase(_ source: String, with replacement: String, in text: String) -> String {
         guard let expression = try? NSRegularExpression(
-            pattern: "(?i)(?<![A-Za-z0-9_])\(NSRegularExpression.escapedPattern(for: source))(?![A-Za-z0-9_])"
+            pattern: "(?i)(?<![A-Za-z0-9_./-])\(NSRegularExpression.escapedPattern(for: source))(?![A-Za-z0-9_./-])"
         ) else { return text }
         let mutable = NSMutableString(string: text)
         let range = NSRange(location: 0, length: mutable.length)

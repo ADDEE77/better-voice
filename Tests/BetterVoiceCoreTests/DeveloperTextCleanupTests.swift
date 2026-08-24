@@ -23,6 +23,20 @@ final class DeveloperTextCleanupTests: XCTestCase {
         )
     }
 
+    func testGeneralProfileDoesNotUppercaseOrdinaryWords() {
+        XCTAssertEqual(
+            DeveloperTextCleanup.apply("take a rest and whisper to the parakeet"),
+            "take a rest and whisper to the parakeet"
+        )
+    }
+
+    func testDeveloperProfilePreservesFileExtensions() {
+        XCTAssertEqual(
+            DeveloperTextCleanup.apply("run cat package.json", profile: .terminal),
+            "run cat package.json"
+        )
+    }
+
     func testPunctuationAndWordingStayUntouched() {
         XCTAssertEqual(
             DeveloperTextCleanup.apply("Please use SwiftUI, not Swift."),
