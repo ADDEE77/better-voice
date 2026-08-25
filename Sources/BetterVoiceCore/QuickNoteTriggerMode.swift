@@ -14,6 +14,14 @@ public enum QuickNoteTriggerMode: String, Sendable, CaseIterable {
         }
     }
 
+    /// Short label for segmented controls in narrow settings panes.
+    public var pickerLabel: String {
+        switch self {
+        case .hold: return "Hold"
+        case .doubleTap: return "Double-tap"
+        }
+    }
+
     public var detail: String {
         detail(holdDelayMilliseconds: QuickNoteHoldDelay.defaultMilliseconds)
     }
