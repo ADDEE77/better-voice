@@ -45,6 +45,23 @@ final class ModifierDoubleTapDetectorTests: XCTestCase {
         detector.reset()
         XCTAssertFalse(detector.modifierChanged(active: true, now: 0.2))
     }
+
+    func testRepeatedModifierEventDoesNotShortenHold() {
+        var detector = ModifierDoubleTapDetector()
+        XCTAssertFalse(detector.modifierChanged(active: true, now: 0))
+        XCTAssertFalse(detector.modifierChanged(active: true, now: 0.2))
+        XCTAssertFalse(detector.modifierChanged(active: false, now: 0.3))
+        XCTAssertFalse(detector.modifierChanged(active: true, now: 0.4))
+    }
+
+    func testSecondTapReleaseDoesNotArmAnotherTap() {
+        var detector = ModifierDoubleTapDetector()
+        XCTAssertFalse(detector.modifierChanged(active: true, now: 0))
+        XCTAssertFalse(detector.modifierChanged(active: false, now: 0.1))
+        XCTAssertTrue(detector.modifierChanged(active: true, now: 0.2))
+        XCTAssertFalse(detector.modifierChanged(active: false, now: 0.3))
+        XCTAssertFalse(detector.modifierChanged(active: true, now: 0.4))
+    }
 }
 
 final class ModifierToggleTapDetectorTests: XCTestCase {
@@ -65,6 +82,13 @@ final class ModifierToggleTapDetectorTests: XCTestCase {
         XCTAssertFalse(detector.modifierChanged(active: true, now: 0))
         detector.nonModifierKeyPressed()
         XCTAssertFalse(detector.modifierChanged(active: false, now: 0.1))
+    }
+
+    func testRepeatedModifierEventDoesNotShortenHold() {
+        var detector = ModifierToggleTapDetector()
+        XCTAssertFalse(detector.modifierChanged(active: true, now: 0))
+        XCTAssertFalse(detector.modifierChanged(active: true, now: 0.2))
+        XCTAssertFalse(detector.modifierChanged(active: false, now: 0.3))
     }
 }
 
