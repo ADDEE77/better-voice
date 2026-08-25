@@ -4,7 +4,7 @@ Voice dictation with the screen context you point at.
 
 BetterVoice is an experimental, open-source macOS menu-bar app. It transcribes speech locally and captures the full screen whenever you circle something with your pointer, leaving a restrained blue highlight around the referenced area.
 
-![BetterVoice onboarding and visual capture preview](docs/assets/bettervoice-onboarding.png)
+![BetterVoice first-run onboarding](docs/assets/bettervoice-onboarding.png)
 
 ## Use it
 
@@ -71,7 +71,9 @@ unzip BetterVoice-macos-arm64.zip
 open BetterVoice.app
 ```
 
-The release targets macOS 14+ on Apple Silicon. This experimental build is signed with an Apple Development certificate and is not notarized with a Developer ID certificate yet. On the first launch, macOS may require you to Control-click the app, choose **Open**, and confirm. If macOS still blocks it, use **System Settings → Privacy & Security → Open Anyway**. Then approve Microphone, Screen Recording, and Accessibility when BetterVoice asks. The local speech model downloads once (about 500 MB).
+The release targets macOS 14+ on Apple Silicon. This experimental build is signed with an Apple Development certificate and is not notarized with a Developer ID certificate yet. On the first launch, macOS may require you to Control-click the app, choose **Open**, and confirm. If macOS still blocks it, use **System Settings → Privacy & Security → Open Anyway**. Then approve Microphone and Accessibility when BetterVoice asks; Screen Recording is optional for visual context. The local speech model downloads once (about 500 MB).
+
+The first launch opens a guided setup: download the local model, grant microphone and Accessibility access, optionally enable Screen Recording for visual context, choose your microphone, and review the shortcut walkthrough. After setup, open **Settings…** from the menu bar any time to revisit these choices.
 
 ## Install from source
 
@@ -85,10 +87,11 @@ cd better-voice
 
 The script builds, signs, and opens `.build/BetterVoice.app`. BetterVoice then walks through:
 
-1. Microphone permission
-2. Screen Recording permission
-3. Accessibility permission for returning text to the selected field
-4. The one-time local Parakeet model download (~500 MB)
+1. The one-time local Parakeet model download (~500 MB)
+2. Microphone permission
+3. Accessibility permission for global shortcuts and returning text to the selected field
+4. Optional Screen Recording permission for circles and visual context
+5. Microphone selection and the shortcut walkthrough
 
 Automatic microphone selection prefers a connected external input and falls back to the system input. You can choose a specific device during setup or from the menu bar.
 

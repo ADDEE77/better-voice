@@ -100,11 +100,27 @@ final class SetupModel: ObservableObject {
     var complete: () -> Void = {}
 
     var readyCount: Int {
-        [microphoneGranted, screenGranted, accessibilityGranted, modelReady].filter { $0 }.count
+        dictationReadyCount + (screenGranted ? 1 : 0)
+    }
+
+    var dictationReadyCount: Int {
+        [microphoneGranted, accessibilityGranted, modelReady].filter { $0 }.count
+    }
+
+    var dictationReady: Bool {
+        dictationReadyCount == 3
+    }
+
+    var contextReady: Bool {
+        dictationReady && screenGranted
+    }
+
+    var microphoneAvailable: Bool {
+        microphoneGranted && microphoneOptions.contains { $0.id != "automatic" }
     }
 
     var setupComplete: Bool {
-        readyCount == 4
+        dictationReady
     }
 }
 
@@ -461,6 +477,360 @@ private struct SetupSidebar: View {
     }
 }
 
+private enum OnboardingStep: Int, CaseIterable {
+    case model
+    case permissions
+    case microphone
+    case guide
+
+    var title: String {
+        switch self {
+        case .model: return "Download the local model"
+        case .permissions: return "Allow BetterVoice to work anywhere"
+        case .microphone: return "Choose your microphone"
+        case .guide: return "You’re ready to use BetterVoice"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .model: return "Your voice stays on this Mac."
+        case .permissions: return "A few macOS permissions unlock dictation and screen context."
+        case .microphone: return "Use Automatic or choose a specific input."
+        case .guide: return "Talk, point, and give your agent the whole thought."
+        }
+    }
+}
+
+private struct OnboardingView: View {
+    @ObservedObject var model: SetupModel
+    @State private var step: OnboardingStep = .model
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("BetterVoice")
+                            .font(.title2.weight(.semibold))
+                        Text(step.title)
+                            .font(.title3.weight(.medium))
+                        Text(step.subtitle)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text("Step \(step.rawValue + 1) of \(OnboardingStep.allCases.count)")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                ProgressView(value: Double(step.rawValue + 1), total: Double(OnboardingStep.allCases.count))
+                    .tint(.accentColor)
+            }
+            .padding(.horizontal, 34)
+            .padding(.top, 28)
+            .padding(.bottom, 18)
+
+            Divider()
+
+            ScrollView {
+                stepContent
+                    .padding(34)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Divider()
+
+            HStack {
+                if step != .model {
+                    Button("Back") { step = OnboardingStep(rawValue: step.rawValue - 1) ?? .model }
+                }
+                Spacer()
+                Button(continueTitle) { advance() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canContinue)
+            }
+            .padding(.horizontal, 34)
+            .padding(.vertical, 18)
+        }
+        .frame(minWidth: 860, idealWidth: 920, minHeight: 660, idealHeight: 700)
+        .onAppear { model.refresh() }
+    }
+
+    @ViewBuilder
+    private var stepContent: some View {
+        switch step {
+        case .model:
+            modelStep
+        case .permissions:
+            permissionsStep
+        case .microphone:
+            microphoneStep
+        case .guide:
+            guideStep
+        }
+    }
+
+    private var modelStep: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            OnboardingHero(
+                systemImage: "waveform.circle.fill",
+                title: "Private, local dictation",
+                detail: "BetterVoice uses the Parakeet speech model on your Mac. Download it once, then dictate without sending audio to a server."
+            )
+            OnboardingPanel {
+                HStack(spacing: 14) {
+                    Image(systemName: model.modelReady ? "checkmark.circle.fill" : "arrow.down.circle.fill")
+                        .font(.system(size: 30))
+                        .foregroundStyle(model.modelReady ? Color.green : Color.accentColor)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.modelReady ? "Local model ready" : "Download the Parakeet model")
+                            .font(.headline)
+                        Text(model.modelStatus)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if model.modelBusy {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else if !model.modelReady {
+                        Button(model.modelStatus.hasPrefix("Download failed") ? "Retry download" : "Download model") {
+                            model.downloadModel()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    } else {
+                        Label("Ready", systemImage: "checkmark")
+                            .foregroundStyle(.green)
+                    }
+                }
+            }
+            Label("About 500 MB • stored locally • no account required", systemImage: "lock.shield")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var permissionsStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            OnboardingPermissionRow(
+                title: "Microphone",
+                detail: "Needed to hear your dictation.",
+                ready: model.microphoneGranted,
+                actionTitle: "Allow",
+                action: model.requestMicrophone
+            )
+            OnboardingPermissionRow(
+                title: "Accessibility",
+                detail: "Needed for global shortcuts and inserting text into the selected app.",
+                ready: model.accessibilityGranted,
+                actionTitle: "Open Settings",
+                action: model.requestAccessibility
+            )
+            OnboardingPermissionRow(
+                title: "Screen Recording",
+                detail: "Needed only when you circle something for visual context.",
+                ready: model.screenGranted,
+                actionTitle: "Open Settings",
+                action: model.requestScreen
+            )
+            Label(
+                "Screen Recording is optional for text-only dictation. You can continue without it and enable it later from Settings.",
+                systemImage: "info.circle"
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var microphoneStep: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            OnboardingHero(
+                systemImage: "mic.fill",
+                title: "Use the microphone that feels right",
+                detail: "Automatic prefers a connected external microphone, then falls back to your Mac’s default input. You can change this later from Settings."
+            )
+            OnboardingPanel {
+                MicrophoneSetupRow(model: model)
+            }
+            if !model.microphoneGranted {
+                Label("Microphone access is still needed before you can continue.", systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            } else if !model.microphoneAvailable {
+                HStack(spacing: 10) {
+                    Label("No input devices found. Connect a microphone and refresh.", systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    Button("Refresh devices", action: model.refresh)
+                        .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private var guideStep: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            HStack(alignment: .top, spacing: 24) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Talk. Point. Give your agent the whole thought.", systemImage: "waveform.circle.fill")
+                        .font(.title3.weight(.semibold))
+                    Text("BetterVoice inserts your words and any screen context into the app you were using.")
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                CapturePreview()
+                    .frame(width: 190, height: 114)
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                OnboardingHowStep(number: "1", title: "Speak", detail: "Hold \(model.hotkeyConfiguration.quick.label) for a quick note, or press \(model.hotkeyConfiguration.long.label) for a longer explanation.")
+                OnboardingHowStep(number: "2", title: "Circle", detail: "While recording, draw a deliberate circle around anything important. A blue trail shows what BetterVoice sees.")
+                OnboardingHowStep(number: "3", title: "Finish", detail: "Release the quick-note key or press the long shortcut again. BetterVoice inserts the transcript and captured images together.")
+            }
+            .padding(16)
+            .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
+            HStack(spacing: 28) {
+                ShortcutGuide(keys: model.hotkeyConfiguration.quick.label, title: "Quick note", detail: "Hold to record")
+                ShortcutGuide(keys: model.hotkeyConfiguration.long.label, title: "Long explanation", detail: "Press to start and finish")
+            }
+            if !model.screenGranted {
+                Label("Text dictation is ready. Enable Screen Recording later to add visual context.", systemImage: "eye.slash")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var canContinue: Bool {
+        switch step {
+        case .model: return model.modelReady
+        case .permissions: return model.microphoneGranted && model.accessibilityGranted
+        case .microphone: return model.microphoneAvailable
+        case .guide: return true
+        }
+    }
+
+    private var continueTitle: String {
+        switch step {
+        case .model: return "Continue"
+        case .permissions: return model.screenGranted ? "Continue" : "Continue without screen context"
+        case .microphone: return "Show me how it works"
+        case .guide: return "Start using BetterVoice"
+        }
+    }
+
+    private func advance() {
+        guard canContinue else { return }
+        if step == .guide {
+            model.complete()
+        } else {
+            step = OnboardingStep(rawValue: step.rawValue + 1) ?? .guide
+        }
+    }
+}
+
+private struct OnboardingHero: View {
+    let systemImage: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Image(systemName: systemImage)
+                .font(.system(size: 42))
+                .foregroundStyle(.blue)
+                .frame(width: 64, height: 64)
+                .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                Text(detail)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+private struct OnboardingPanel<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .padding(20)
+            .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+private struct OnboardingPermissionRow: View {
+    let title: String
+    let detail: String
+    let ready: Bool
+    let actionTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: ready ? "checkmark.circle.fill" : "circle")
+                .font(.title2)
+                .foregroundStyle(ready ? Color.green : Color.accentColor)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(title).font(.headline)
+                    Text(ready ? "Ready" : "Needed")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ready ? Color.green : Color.accentColor)
+                }
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            if !ready {
+                Button(actionTitle, action: action)
+                    .controlSize(.small)
+            }
+        }
+        .padding(16)
+        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct OnboardingHowStep: View {
+    let number: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(number)
+                .font(.headline)
+                .foregroundStyle(.white)
+                .frame(width: 27, height: 27)
+                .background(Color.accentColor, in: Circle())
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).fontWeight(.semibold)
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
 private struct ReadinessCard: View {
     @ObservedObject var model: SetupModel
 
@@ -469,12 +839,15 @@ private struct ReadinessCard: View {
             Image(systemName: model.setupComplete ? "checkmark.seal.fill" : "sparkles")
                 .font(.title2)
                 .foregroundStyle(model.setupComplete ? Color.green : Color.accentColor)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text(model.setupComplete ? "Ready to record" : "Finish setup to get started")
+                Text(model.contextReady ? "Ready to record" : model.dictationReady ? "Ready to dictate" : "Finish setup to get started")
                     .fontWeight(.semibold)
-                Text(model.setupComplete
-                     ? "Use \(model.hotkeyConfiguration.quick.label) for a quick note or \(model.hotkeyConfiguration.long.label) for a longer explanation."
-                     : "\(model.readyCount) of 4 essentials are ready. You can return here any time from the menu bar.")
+                Text(model.dictationReady
+                     ? (model.contextReady
+                        ? "Use \(model.hotkeyConfiguration.quick.label) for a quick note or \(model.hotkeyConfiguration.long.label) for a longer explanation."
+                        : "Text dictation is ready. Enable Screen Recording to add visual context.")
+                     : "\(model.dictationReadyCount) of 3 dictation essentials are ready. You can return here any time from the menu bar.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -818,14 +1191,19 @@ private struct CapturePreview: View {
 final class SetupWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
 
-    func show(model: SetupModel) {
+    func show(model: SetupModel, onboarding: Bool = false) {
+        let rootView = onboarding
+            ? AnyView(OnboardingView(model: model))
+            : AnyView(SetupView(model: model))
         if let window {
+            window.contentViewController = NSHostingController(rootView: rootView)
+            window.title = onboarding ? "Welcome to BetterVoice" : "BetterVoice Settings"
             NSApplication.shared.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             return
         }
-        let window = NSWindow(contentViewController: NSHostingController(rootView: SetupView(model: model)))
-        window.title = "BetterVoice Settings"
+        let window = NSWindow(contentViewController: NSHostingController(rootView: rootView))
+        window.title = onboarding ? "Welcome to BetterVoice" : "BetterVoice Settings"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.minSize = NSSize(width: 900, height: 620)
         window.isReleasedWhenClosed = false

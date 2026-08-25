@@ -15,6 +15,10 @@ Better Voice is a small native Swift app with one executable target and one test
 9. At stop, BetterVoice captures the focused app and field. `SessionOutput` writes `context.md`, pastes the transcript, then pastes captured images into the same field when both are present. Quick notes restore the previous clipboard afterward; long explanations leave the captured images available on the clipboard. The menu bar's Recent submenu reads the latest valid local session for recovery.
 10. `SessionStorage` deletes sessions older than 7 days and keeps the remaining folder below 500 MB.
 
+## First-run onboarding
+
+`AppController` opens `OnboardingView` until `completedOnboarding` is set. The guided flow keeps setup sequential: download the local speech model, request microphone and Accessibility permissions, offer Screen Recording as an optional visual-context permission, choose the microphone, then explain the two recording shortcuts and circle gesture. Later visits use `SetupView` for the full settings navigator.
+
 ## Repository map
 
 ```text

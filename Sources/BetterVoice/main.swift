@@ -1799,7 +1799,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             showError("Saved-session cleanup failed", detail: error.localizedDescription)
         }
         if !UserDefaults.standard.bool(forKey: "completedOnboarding") {
-            DispatchQueue.main.async { [weak self] in self?.showSetup() }
+            DispatchQueue.main.async { [weak self] in self?.showSetupWindow(onboarding: true) }
         }
     }
 
@@ -2052,8 +2052,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     }
 
     @objc private func showSetup() {
+        showSetupWindow(onboarding: !UserDefaults.standard.bool(forKey: "completedOnboarding"))
+    }
+
+    private func showSetupWindow(onboarding: Bool) {
         refreshSetupModel()
-        setupWindow.show(model: setupModel)
+        setupWindow.show(model: setupModel, onboarding: onboarding)
     }
 
     private func setCircleMinimumAngle(_ degrees: Double) {
