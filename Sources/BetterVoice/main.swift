@@ -1379,7 +1379,9 @@ private final class InputMonitor {
     private var quickKeyActive = false
     private var quickHoldActive = false
     private var quickNoteRecording = false
-    private var doubleTapDetector = ModifierDoubleTapDetector()
+    private var quickDoubleTapDetector = ModifierDoubleTapDetector()
+    private var quickToggleTapDetector = ModifierToggleTapDetector()
+    private var longDoubleTapDetector = ModifierDoubleTapDetector()
     private let startPushToTalk: () -> Void
     private let stopPushToTalk: () -> Void
     private let toggleLongForm: () -> Void
@@ -1412,7 +1414,9 @@ private final class InputMonitor {
 
     func recordingDidEnd() {
         quickNoteRecording = false
-        doubleTapDetector.reset()
+        quickDoubleTapDetector.reset()
+        quickToggleTapDetector.reset()
+        longDoubleTapDetector.reset()
     }
 
     func refreshKeyboardMonitoring() {
@@ -1485,6 +1489,7 @@ private final class InputMonitor {
 
     private func handleFlags(_ flags: NSEvent.ModifierFlags) {
         let normalized = flags.intersection(.deviceIndependentFlagsMask)
+        let now = Date().timeIntervalSinceReferenceDate
         let quick = hotkeyConfiguration.quick
         if quick.keyCode == nil {
             let active = quick.matches(
@@ -1493,13 +1498,22 @@ private final class InputMonitor {
                 control: normalized.contains(.control),
                 shift: normalized.contains(.shift)
             )
-            if hotkeyConfiguration.quickTriggerMode == .doubleTap {
-                if doubleTapDetector.modifierChanged(active: active, now: Date().timeIntervalSinceReferenceDate) {
+            switch hotkeyConfiguration.quickTriggerMode {
+            case .hold:
+                if active != modifierQuickActive {
+                    modifierQuickActive = active
+                    active ? beginQuickShortcut() : endQuickShortcut()
+                }
+            case .doubleTap:
+                if quickDoubleTapDetector.modifierChanged(active: active, now: now) {
                     toggleQuickNoteRecording()
                 }
-            } else if active != modifierQuickActive {
                 modifierQuickActive = active
-                active ? beginQuickShortcut() : endQuickShortcut()
+            case .toggle:
+                if quickToggleTapDetector.modifierChanged(active: active, now: now) {
+                    toggleQuickNoteRecording()
+                }
+                modifierQuickActive = active
             }
         }
 
@@ -1511,8 +1525,17 @@ private final class InputMonitor {
                 control: normalized.contains(.control),
                 shift: normalized.contains(.shift)
             )
-            if active, !modifierLongActive {
-                triggerLongShortcut()
+            switch hotkeyConfiguration.longTriggerMode {
+            case .toggle:
+                if active, !modifierLongActive {
+                    triggerLongShortcut()
+                }
+            case .doubleTap:
+                if longDoubleTapDetector.modifierChanged(active: active, now: now) {
+                    triggerLongShortcut()
+                }
+            case .hold:
+                break
             }
             modifierLongActive = active
         }
@@ -1520,19 +1543,36 @@ private final class InputMonitor {
 
     private func handleKeyDown(_ event: NSEvent) {
         guard !event.isARepeat else { return }
-        if hotkeyConfiguration.quickTriggerMode == .doubleTap,
-           hotkeyConfiguration.quick.isModifierOnly {
-            doubleTapDetector.nonModifierKeyPressed()
+        if hotkeyConfiguration.quick.isModifierOnly {
+            switch hotkeyConfiguration.quickTriggerMode {
+            case .doubleTap:
+                quickDoubleTapDetector.nonModifierKeyPressed()
+            case .toggle:
+                quickToggleTapDetector.nonModifierKeyPressed()
+            case .hold:
+                break
+            }
+        }
+        if hotkeyConfiguration.long.isModifierOnly,
+           hotkeyConfiguration.longTriggerMode == .doubleTap {
+            longDoubleTapDetector.nonModifierKeyPressed()
         }
         if matches(hotkeyConfiguration.long, event: event) {
-            triggerLongShortcut()
+            if hotkeyConfiguration.longTriggerMode == .toggle {
+                triggerLongShortcut()
+            }
             return
         }
-        if hotkeyConfiguration.quickTriggerMode == .hold,
-           matches(hotkeyConfiguration.quick, event: event),
-           !quickKeyActive {
+        guard matches(hotkeyConfiguration.quick, event: event) else { return }
+        switch hotkeyConfiguration.quickTriggerMode {
+        case .hold:
+            guard !quickKeyActive else { return }
             quickKeyActive = true
             beginQuickShortcut()
+        case .toggle:
+            toggleQuickNoteRecording()
+        case .doubleTap:
+            break
         }
     }
 
@@ -1600,7 +1640,8 @@ private final class InputMonitor {
             promoteToLongForm()
         } else if quickNoteRecording {
             quickNoteRecording = false
-            doubleTapDetector.reset()
+            quickDoubleTapDetector.reset()
+            quickToggleTapDetector.reset()
             promoteToLongForm()
         } else {
             toggleLongForm()
@@ -1615,7 +1656,9 @@ private final class InputMonitor {
         quickKeyActive = false
         quickHoldActive = false
         quickNoteRecording = false
-        doubleTapDetector.reset()
+        quickDoubleTapDetector.reset()
+        quickToggleTapDetector.reset()
+        longDoubleTapDetector.reset()
     }
 
     private func sampleMouse() {
@@ -1649,6 +1692,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     private static let quickHotkeyKey = "quickRecordingHotkey"
     private static let longHotkeyKey = "longRecordingHotkey"
     private static let quickNoteTriggerModeKey = "quickNoteTriggerMode"
+    private static let longNoteTriggerModeKey = "longNoteTriggerMode"
     private static let quickNoteHoldDelayKey = "quickNoteHoldDelayMilliseconds"
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let microphones = MicrophoneManager()
@@ -1683,7 +1727,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         HotkeyConfiguration(
             quick: loadHotkey(forKey: Self.quickHotkeyKey, fallback: .option),
             long: loadHotkey(forKey: Self.longHotkeyKey, fallback: .commandOption),
-            quickTriggerMode: loadQuickNoteTriggerMode(),
+            quickTriggerMode: loadQuickTriggerMode(),
+            longTriggerMode: loadLongTriggerMode(),
             quickHoldDelayMilliseconds: loadQuickNoteHoldDelay()
         )
     }
@@ -1696,19 +1741,37 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     private var quickShortcutLabel: String { hotkeyConfiguration.quick.label }
     private var longShortcutLabel: String { hotkeyConfiguration.long.label }
     private var quickShortcutActionHint: String {
-        switch hotkeyConfiguration.quickTriggerMode {
-        case .hold:
-            return "hold \(quickShortcutLabel)"
-        case .doubleTap:
-            return "double-tap \(quickShortcutLabel)"
-        }
+        actionHint(
+            for: hotkeyConfiguration.quickTriggerMode,
+            bindingLabel: quickShortcutLabel
+        )
+    }
+    private var longShortcutActionHint: String {
+        actionHint(
+            for: hotkeyConfiguration.longTriggerMode,
+            bindingLabel: longShortcutLabel
+        )
     }
     private var quickShortcutStopHint: String {
-        switch hotkeyConfiguration.quickTriggerMode {
-        case .hold:
-            return "Release \(quickShortcutLabel) to stop"
-        case .doubleTap:
-            return "Double-tap \(quickShortcutLabel) to stop"
+        stopHint(
+            for: hotkeyConfiguration.quickTriggerMode,
+            bindingLabel: quickShortcutLabel
+        )
+    }
+
+    private func actionHint(for mode: RecordingTriggerMode, bindingLabel: String) -> String {
+        switch mode {
+        case .hold: return "hold \(bindingLabel)"
+        case .toggle: return "press \(bindingLabel)"
+        case .doubleTap: return "double-tap \(bindingLabel)"
+        }
+    }
+
+    private func stopHint(for mode: RecordingTriggerMode, bindingLabel: String) -> String {
+        switch mode {
+        case .hold: return "Release \(bindingLabel) to stop"
+        case .toggle: return "Press \(bindingLabel) again to stop"
+        case .doubleTap: return "Double-tap \(bindingLabel) to stop"
         }
     }
 
@@ -1745,12 +1808,6 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         model.setHotkeyConfiguration = { [weak self] configuration in
             self?.setHotkeyConfiguration(configuration)
         }
-        model.setQuickNoteTriggerMode = { [weak self] mode in
-            self?.setQuickNoteTriggerMode(mode)
-        }
-        model.setQuickNoteHoldDelay = { [weak self] milliseconds in
-            self?.setQuickNoteHoldDelay(milliseconds)
-        }
         model.refresh = { [weak self] in self?.refreshSetupModel() }
         model.complete = { [weak self] in
             UserDefaults.standard.set(true, forKey: "completedOnboarding")
@@ -1767,10 +1824,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         setStatusIcon(.idle)
         statusItem.button?.imagePosition = .imageOnly
         statusItem.button?.imageScaling = .scaleProportionallyDown
-        statusItem.button?.toolTip = "BetterVoice — \(quickShortcutActionHint) or press \(longShortcutLabel) • Microphone: \(microphones.selectedLabel)"
+        statusItem.button?.toolTip = "BetterVoice — \(quickShortcutActionHint) or \(longShortcutActionHint) • Microphone: \(microphones.selectedLabel)"
 
         let menu = NSMenu()
-        let statusMenuItem = NSMenuItem(title: "Ready • \(quickShortcutActionHint) or press \(longShortcutLabel)", action: nil, keyEquivalent: "")
+        let statusMenuItem = NSMenuItem(title: "Ready • \(quickShortcutActionHint) or \(longShortcutActionHint)", action: nil, keyEquivalent: "")
         statusMenuItem.isEnabled = false
         self.statusMenuItem = statusMenuItem
         menu.addItem(statusMenuItem)
@@ -1858,6 +1915,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         inputMonitor?.start()
         setupModel.hotkeyConfiguration = hotkeyConfiguration
         setupModel.quickNoteTriggerMode = hotkeyConfiguration.quickTriggerMode
+        setupModel.longNoteTriggerMode = hotkeyConfiguration.longTriggerMode
         setupModel.quickNoteHoldDelayMilliseconds = hotkeyConfiguration.quickHoldDelayMilliseconds
         setupModel.circleMinimumAngleDegrees = circleMinimumAngleDegrees
         updateShortcutStatus()
@@ -2084,6 +2142,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         setupModel.circleMinimumAngleDegrees = circleMinimumAngleDegrees
         setupModel.hotkeyConfiguration = hotkeyConfiguration
         setupModel.quickNoteTriggerMode = hotkeyConfiguration.quickTriggerMode
+        setupModel.longNoteTriggerMode = hotkeyConfiguration.longTriggerMode
         setupModel.quickNoteHoldDelayMilliseconds = hotkeyConfiguration.quickHoldDelayMilliseconds
         setupModel.grammarSelectionEnabled = state == .idle
         switch transcriber.state {
@@ -2171,10 +2230,18 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         UserDefaults.standard.set(values, forKey: key)
     }
 
-    private func loadQuickNoteTriggerMode() -> QuickNoteTriggerMode {
+    private func loadQuickTriggerMode() -> RecordingTriggerMode {
         guard let raw = UserDefaults.standard.string(forKey: Self.quickNoteTriggerModeKey),
-              let mode = QuickNoteTriggerMode(rawValue: raw) else {
+              let mode = RecordingTriggerMode(rawValue: raw) else {
             return .hold
+        }
+        return mode
+    }
+
+    private func loadLongTriggerMode() -> RecordingTriggerMode {
+        guard let raw = UserDefaults.standard.string(forKey: Self.longNoteTriggerModeKey),
+              let mode = RecordingTriggerMode(rawValue: raw) else {
+            return .toggle
         }
         return mode
     }
@@ -2189,6 +2256,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         saveHotkey(configuration.quick, forKey: Self.quickHotkeyKey)
         saveHotkey(configuration.long, forKey: Self.longHotkeyKey)
         UserDefaults.standard.set(configuration.quickTriggerMode.rawValue, forKey: Self.quickNoteTriggerModeKey)
+        UserDefaults.standard.set(configuration.longTriggerMode.rawValue, forKey: Self.longNoteTriggerModeKey)
         UserDefaults.standard.set(
             QuickNoteHoldDelay.clamp(configuration.quickHoldDelayMilliseconds),
             forKey: Self.quickNoteHoldDelayKey
@@ -2196,27 +2264,14 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         inputMonitor?.update(configuration: configuration)
         setupModel.hotkeyConfiguration = configuration
         setupModel.quickNoteTriggerMode = configuration.quickTriggerMode
+        setupModel.longNoteTriggerMode = configuration.longTriggerMode
         setupModel.quickNoteHoldDelayMilliseconds = configuration.quickHoldDelayMilliseconds
         updateShortcutStatus()
     }
 
-    private func setQuickNoteTriggerMode(_ mode: QuickNoteTriggerMode) {
-        guard state == .idle else { return }
-        var configuration = hotkeyConfiguration
-        configuration.quickTriggerMode = mode
-        setHotkeyConfiguration(configuration)
-    }
-
-    private func setQuickNoteHoldDelay(_ milliseconds: Int) {
-        guard state == .idle else { return }
-        var configuration = hotkeyConfiguration
-        configuration.quickHoldDelayMilliseconds = QuickNoteHoldDelay.clamp(milliseconds)
-        setHotkeyConfiguration(configuration)
-    }
-
     private func updateShortcutStatus() {
-        statusItem.button?.toolTip = "BetterVoice — \(quickShortcutActionHint) or press \(longShortcutLabel) • Microphone: \(microphones.selectedLabel)"
-        statusMenuItem?.title = "Ready • \(quickShortcutActionHint) or press \(longShortcutLabel)"
+        statusItem.button?.toolTip = "BetterVoice — \(quickShortcutActionHint) or \(longShortcutActionHint) • Microphone: \(microphones.selectedLabel)"
+        statusMenuItem?.title = "Ready • \(quickShortcutActionHint) or \(longShortcutActionHint)"
         recordingMenuItem?.title = "Start long recording (\(longShortcutLabel))"
     }
 
@@ -2308,7 +2363,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             await transcriber.downloadModel()
             switch transcriber.state {
             case .ready:
-                showStatus("Local model ready • \(quickShortcutActionHint) or press \(longShortcutLabel)", resetAfter: 4)
+                showStatus("Local model ready • \(quickShortcutActionHint) or \(longShortcutActionHint)", resetAfter: 4)
             case .failed(let message):
                 showError("Model download failed: \(message)")
             default:
@@ -2790,7 +2845,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         let timer = Timer(timeInterval: resetAfter, repeats: false) { [weak self] _ in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.state == .idle else { return }
-                self.showStatus("Ready • \(self.quickShortcutActionHint) or press \(self.longShortcutLabel)")
+                self.showStatus("Ready • \(self.quickShortcutActionHint) or \(self.longShortcutActionHint)")
             }
         }
         statusFeedbackTimer = timer

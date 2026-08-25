@@ -46,3 +46,53 @@ final class ModifierDoubleTapDetectorTests: XCTestCase {
         XCTAssertFalse(detector.modifierChanged(active: true, now: 0.2))
     }
 }
+
+final class ModifierToggleTapDetectorTests: XCTestCase {
+    func testShortTapToggles() {
+        var detector = ModifierToggleTapDetector()
+        XCTAssertFalse(detector.modifierChanged(active: true, now: 0))
+        XCTAssertTrue(detector.modifierChanged(active: false, now: 0.1))
+    }
+
+    func testHoldDoesNotToggle() {
+        var detector = ModifierToggleTapDetector()
+        XCTAssertFalse(detector.modifierChanged(active: true, now: 0))
+        XCTAssertFalse(detector.modifierChanged(active: false, now: 0.5))
+    }
+
+    func testModifierComboCancelsTap() {
+        var detector = ModifierToggleTapDetector()
+        XCTAssertFalse(detector.modifierChanged(active: true, now: 0))
+        detector.nonModifierKeyPressed()
+        XCTAssertFalse(detector.modifierChanged(active: false, now: 0.1))
+    }
+}
+
+final class RecordingTriggerModeTests: XCTestCase {
+    func testQuickModesForModifierOnlyBinding() {
+        XCTAssertEqual(
+            RecordingTriggerMode.availableModes(forQuick: true, modifierOnly: true),
+            [.hold, .toggle, .doubleTap]
+        )
+    }
+
+    func testQuickModesForKeyComboBinding() {
+        XCTAssertEqual(
+            RecordingTriggerMode.availableModes(forQuick: true, modifierOnly: false),
+            [.hold, .toggle]
+        )
+    }
+
+    func testLongModesForModifierOnlyBinding() {
+        XCTAssertEqual(
+            RecordingTriggerMode.availableModes(forQuick: false, modifierOnly: true),
+            [.toggle, .doubleTap]
+        )
+    }
+
+    func testHoldDetailIncludesMilliseconds() {
+        XCTAssertTrue(
+            RecordingTriggerMode.hold.detail(bindingLabel: "⌥", holdDelayMilliseconds: 200).contains("200 ms")
+        )
+    }
+}
