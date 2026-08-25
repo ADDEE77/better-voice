@@ -49,15 +49,19 @@ struct HotkeyBinding: Equatable, Sendable {
             && self.control == control
             && self.shift == shift
     }
+
+    var isModifierOnly: Bool { keyCode == nil }
 }
 
 struct HotkeyConfiguration: Equatable, Sendable {
     var quick: HotkeyBinding
     var long: HotkeyBinding
+    var quickTriggerMode: QuickNoteTriggerMode
 
     static let standard = HotkeyConfiguration(
         quick: .option,
-        long: .commandOption
+        long: .commandOption,
+        quickTriggerMode: .hold
     )
 }
 
@@ -84,6 +88,7 @@ final class SetupModel: ObservableObject {
     @Published var circleMinimumAngleDegrees = 340.0
     @Published var hotkeyConfiguration = HotkeyConfiguration.standard
     @Published var hotkeyError: String?
+    @Published var quickNoteTriggerMode: QuickNoteTriggerMode = .hold
 
     var requestMicrophone: () -> Void = {}
     var chooseMicrophone: (String) -> Void = { _ in }
@@ -96,6 +101,7 @@ final class SetupModel: ObservableObject {
     var setTranscriptionLanguage: (TranscriptionLanguage) -> Void = { _ in }
     var setCircleMinimumAngle: (Double) -> Void = { _ in }
     var setHotkeyConfiguration: (HotkeyConfiguration) -> Void = { _ in }
+    var setQuickNoteTriggerMode: (QuickNoteTriggerMode) -> Void = { _ in }
     var refresh: () -> Void = {}
     var complete: () -> Void = {}
 
@@ -251,7 +257,7 @@ struct SetupView: View {
                 .buttonStyle(.bordered)
             }
             HStack(spacing: 28) {
-                ShortcutGuide(keys: model.hotkeyConfiguration.quick.label, title: "Quick note", detail: "Hold to record. Release to finish.")
+                ShortcutGuide(keys: model.hotkeyConfiguration.quick.label, title: "Quick note", detail: model.quickNoteTriggerMode.detail)
                 ShortcutGuide(keys: model.hotkeyConfiguration.long.label, title: "Long explanation", detail: "Press once to start, again to finish.")
             }
         }
@@ -372,12 +378,35 @@ struct SetupView: View {
                 .fixedSize(horizontal: false, vertical: true)
             HotkeyRecordingRow(
                 title: "Quick note",
-                detail: "Hold this shortcut to record. Release it to finish.",
+                detail: model.quickNoteTriggerMode.detail,
                 binding: Binding(
                     get: { model.hotkeyConfiguration.quick },
                     set: { value in updateHotkeys(quick: value) }
                 )
             )
+            if model.hotkeyConfiguration.quick.isModifierOnly {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Quick note trigger")
+                        .fontWeight(.medium)
+                    Picker("Quick note trigger", selection: Binding(
+                        get: { model.quickNoteTriggerMode },
+                        set: { mode in
+                            model.quickNoteTriggerMode = mode
+                            model.setQuickNoteTriggerMode(mode)
+                        }
+                    )) {
+                        ForEach(QuickNoteTriggerMode.allCases, id: \.self) { mode in
+                            Text(mode.name).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Text("Double-tap avoids holding Option while you use Option-based shortcuts in other apps.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             HotkeyRecordingRow(
                 title: "Long explanation",
                 detail: "Press this shortcut once to start and again to finish.",
@@ -401,7 +430,9 @@ struct SetupView: View {
                 let defaults = HotkeyConfiguration.standard
                 model.hotkeyError = nil
                 model.hotkeyConfiguration = defaults
+                model.quickNoteTriggerMode = defaults.quickTriggerMode
                 model.setHotkeyConfiguration(defaults)
+                model.setQuickNoteTriggerMode(defaults.quickTriggerMode)
             }
             .buttonStyle(.link)
         }
@@ -431,6 +462,7 @@ struct SetupView: View {
         var configuration = model.hotkeyConfiguration
         if let quick { configuration.quick = quick }
         if let long { configuration.long = long }
+        configuration.quickTriggerMode = model.quickNoteTriggerMode
         guard configuration.quick != configuration.long else {
             model.hotkeyError = "Quick note and long explanation need different shortcuts."
             return
@@ -688,14 +720,14 @@ private struct OnboardingView: View {
                     .frame(width: 190, height: 114)
             }
             VStack(alignment: .leading, spacing: 12) {
-                OnboardingHowStep(number: "1", title: "Speak", detail: "Hold \(model.hotkeyConfiguration.quick.label) for a quick note, or press \(model.hotkeyConfiguration.long.label) for a longer explanation.")
+                OnboardingHowStep(number: "1", title: "Speak", detail: quickNoteOnboardingDetail)
                 OnboardingHowStep(number: "2", title: "Circle", detail: "While recording, draw a deliberate circle around anything important. A blue trail shows what BetterVoice sees.")
-                OnboardingHowStep(number: "3", title: "Finish", detail: "Release the quick-note key or press the long shortcut again. BetterVoice inserts the transcript and captured images together.")
+                OnboardingHowStep(number: "3", title: "Finish", detail: quickNoteFinishOnboardingDetail)
             }
             .padding(16)
             .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
             HStack(spacing: 28) {
-                ShortcutGuide(keys: model.hotkeyConfiguration.quick.label, title: "Quick note", detail: "Hold to record")
+                ShortcutGuide(keys: model.hotkeyConfiguration.quick.label, title: "Quick note", detail: model.quickNoteTriggerMode == .hold ? "Hold to record" : "Double-tap to toggle")
                 ShortcutGuide(keys: model.hotkeyConfiguration.long.label, title: "Long explanation", detail: "Press to start and finish")
             }
             if !model.screenGranted {
@@ -703,6 +735,26 @@ private struct OnboardingView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var quickNoteOnboardingDetail: String {
+        let quick = model.hotkeyConfiguration.quick.label
+        let long = model.hotkeyConfiguration.long.label
+        switch model.quickNoteTriggerMode {
+        case .hold:
+            return "Hold \(quick) for a quick note, or press \(long) for a longer explanation."
+        case .doubleTap:
+            return "Double-tap \(quick) for a quick note, or press \(long) for a longer explanation."
+        }
+    }
+
+    private var quickNoteFinishOnboardingDetail: String {
+        switch model.quickNoteTriggerMode {
+        case .hold:
+            return "Release the quick-note key or press the long shortcut again. BetterVoice inserts the transcript and captured images together."
+        case .doubleTap:
+            return "Double-tap the quick-note key again or press the long shortcut to finish. BetterVoice inserts the transcript and captured images together."
         }
     }
 
