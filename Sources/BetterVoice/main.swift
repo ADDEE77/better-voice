@@ -246,6 +246,9 @@ private final class LocalTranscriber {
     private(set) var grammarModelState: GrammarModelState = .missing
     private var manager: AsrManager?
     private let grammarCorrector = GrammarCorrector()
+    private let vocabularyURL = VocabularyFile.defaultURL()
+    private var cachedVocabulary: [(String, String)] = []
+    private var cachedVocabularyStamp: Date?
     var onStateChange: (() -> Void)?
     var onGrammarStatus: ((String) -> Void)?
 
@@ -302,12 +305,25 @@ private final class LocalTranscriber {
         onStateChange?()
     }
 
+    /// Re-reads the user's map when the file changed, so an edit lands on the next
+    /// recording without restarting BetterVoice.
+    private func currentVocabulary() -> [(String, String)] {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: vocabularyURL.path)
+        let stamp = attributes?[.modificationDate] as? Date
+        if stamp != cachedVocabularyStamp {
+            cachedVocabulary = VocabularyFile.terms(at: vocabularyURL)
+            cachedVocabularyStamp = stamp
+        }
+        return cachedVocabulary
+    }
+
     func transcribe(_ url: URL, profile: DeveloperAppProfile = .general) async throws -> String {
         guard let manager else { throw BetterVoiceError.localModelUnavailable }
         var decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
         let transcript = try await manager.transcribe(url, decoderState: &decoderState).text
+        let vocabulary = developerCleanupEnabled ? currentVocabulary() : []
         let developerCleaned = developerCleanupEnabled
-            ? DeveloperTextCleanup.apply(transcript, profile: profile)
+            ? DeveloperTextCleanup.apply(transcript, profile: profile, overrides: vocabulary)
             : transcript
         guard grammarCorrectionEnabled else { return developerCleaned }
         guard developerCleaned.split(whereSeparator: \.isWhitespace).count > 1 else { return developerCleaned }
@@ -315,7 +331,7 @@ private final class LocalTranscriber {
         let corrected = await grammarCorrector.correct(developerCleaned)
         onGrammarStatus?("Finishing…")
         return developerCleanupEnabled
-            ? DeveloperTextCleanup.apply(corrected, profile: profile)
+            ? DeveloperTextCleanup.apply(corrected, profile: profile, overrides: vocabulary)
             : corrected
     }
 
@@ -1500,6 +1516,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AudioRecorder.removeAbandonedRecordings()
+        try? VocabularyFile.createTemplateIfMissing(at: VocabularyFile.defaultURL())
         microphones.refresh()
         reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         setStatusIcon(.idle)
@@ -1541,6 +1558,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         let setupItem = NSMenuItem(title: "Getting Started…", action: #selector(showSetup), keyEquivalent: ",")
         setupItem.target = self
         menu.addItem(setupItem)
+        let vocabularyItem = NSMenuItem(title: "Edit Vocabulary…", action: #selector(editVocabulary), keyEquivalent: "")
+        vocabularyItem.target = self
+        menu.addItem(vocabularyItem)
         let sessionsItem = NSMenuItem(title: "Open Saved Sessions", action: #selector(openSavedSessions), keyEquivalent: "")
         sessionsItem.target = self
         menu.addItem(sessionsItem)
@@ -1807,6 +1827,14 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     @objc private func showSetup() {
         refreshSetupModel()
         setupWindow.show(model: setupModel)
+    }
+
+    /// Creates the template on demand too: a user who cleared the file still gets a
+    /// documented starting point instead of an editor opening on nothing.
+    @objc private func editVocabulary() {
+        let url = VocabularyFile.defaultURL()
+        try? VocabularyFile.createTemplateIfMissing(at: url)
+        NSWorkspace.shared.open(url)
     }
 
     @objc private func openSavedSessions() {

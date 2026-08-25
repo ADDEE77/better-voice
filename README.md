@@ -34,6 +34,29 @@ This is intentionally experimental: the model fixes capitalization, punctuation,
 
 The branch experiment also includes a fast, zero-download developer pass inspired by [WhisperDictation](https://github.com/sam-pop/WhisperDictation) and [Dictate](https://github.com/0xbrando/dictate). It fixes common casing such as `github` → `GitHub`, `javascript` → `JavaScript`, and `json` → `JSON`, and recognizes spoken acronyms such as “n p m” in terminals and editors. It preserves the transcript’s wording and runs locally in milliseconds. The pass is enabled by default in this branch and can be turned off from **Getting Started…**. The generic grammar model remains an independent, opt-in beta.
 
+## Your own vocabulary
+
+The developer pass ships with a fixed table, and it will never cover `kubectl`, an internal service name, or a colleague's surname. Those live in a file you edit:
+
+```sh
+~/Library/Application Support/BetterVoice/vocabulary.json
+```
+
+Open it from the menu bar with **Edit Vocabulary…**. The key is what the transcript says, the value is what you meant, and phrases of several words work:
+
+```json
+{
+  "terms": {
+    "cube cuttle": "kubectl",
+    "engine x": "nginx"
+  }
+}
+```
+
+Saving is enough; the file is re-read on your next recording. Longer sources are applied first, so a phrase wins over a word inside it, and matching is whole-word and case-insensitive, so filenames, domains, and paths are left alone. A source you list replaces the built-in spelling for that same term.
+
+One rule is worth respecting: never use an ordinary word as a key. Mapping `read me` to `README` rewrites every sentence containing "read me". The file ships with no terms for that reason, and it is ignored entirely while **Developer vocabulary (Beta)** is off. A malformed file is ignored rather than failing the recording.
+
 ## Download
 
 Download the latest Apple Silicon build from the [BetterVoice releases page](https://github.com/TarunTomar122/better-voice/releases/latest). Choose `BetterVoice-macos-arm64.zip`, unzip it, and open `BetterVoice.app`:

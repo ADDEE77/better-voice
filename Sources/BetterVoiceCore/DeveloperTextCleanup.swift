@@ -58,7 +58,15 @@ public enum DeveloperTextCleanup {
 
     private static let ambiguousTerms: Set<String> = ["rest", "rag", "crud", "whisper", "parakeet", "ai"]
 
-    public static func apply(_ text: String, profile: DeveloperAppProfile = .general) -> String {
+    /// - Parameter overrides: the user's own corrections, from `VocabularyFile`.
+    ///   They run before the built-in table and in the order given, so a caller can
+    ///   put longer phrases first, and a source listed here replaces the built-in
+    ///   spelling for that same source instead of fighting it.
+    public static func apply(
+        _ text: String,
+        profile: DeveloperAppProfile = .general,
+        overrides: [(String, String)] = []
+    ) -> String {
         guard !text.isEmpty else { return text }
         var result = text
         if profile == .terminal || profile == .editor || profile == .ai {
@@ -66,8 +74,13 @@ public enum DeveloperTextCleanup {
                 result = replaceWholePhrase(source, with: replacement, in: result)
             }
         }
+        for (source, replacement) in overrides {
+            result = replaceWholePhrase(source, with: replacement, in: result)
+        }
+        let overridden = Set(overrides.map { $0.0.lowercased() })
         for (source, replacement) in terms {
             guard profile != .general || !ambiguousTerms.contains(source) else { continue }
+            guard !overridden.contains(source) else { continue }
             result = replaceWholePhrase(source, with: replacement, in: result)
         }
         return result
