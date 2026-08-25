@@ -93,6 +93,68 @@ final class ModifierToggleTapDetectorTests: XCTestCase {
 }
 
 final class RecordingTriggerModeTests: XCTestCase {
+    func testCommandOptionUsesPartialStateOnlyForItsOwnModifiers() {
+        XCTAssertEqual(
+            ModifierBindingState(
+                bindingCommand: true,
+                bindingOption: true,
+                bindingControl: false,
+                bindingShift: false,
+                command: true,
+                option: false,
+                control: false,
+                shift: false
+            ),
+            ModifierBindingState(active: false, partial: true)
+        )
+    }
+
+    func testOptionBindingDoesNotBecomePartialWhenCommandIsHeld() {
+        XCTAssertEqual(
+            ModifierBindingState(
+                bindingCommand: false,
+                bindingOption: true,
+                bindingControl: false,
+                bindingShift: false,
+                command: true,
+                option: true,
+                control: false,
+                shift: false
+            ),
+            ModifierBindingState(active: false, partial: false)
+        )
+    }
+
+    func testModifierChordWithExtraModifierIsNeitherActiveNorPartial() {
+        let state = ModifierBindingState(
+            bindingCommand: true,
+            bindingOption: true,
+            bindingControl: false,
+            bindingShift: false,
+            command: true,
+            option: false,
+            control: false,
+            shift: true
+        )
+        XCTAssertFalse(state.active)
+        XCTAssertFalse(state.partial)
+    }
+
+    func testFullModifierChordIsActiveAndNotPartial() {
+        let state = ModifierBindingState(
+            bindingCommand: true,
+            bindingOption: true,
+            bindingControl: false,
+            bindingShift: false,
+            command: true,
+            option: true,
+            control: false,
+            shift: false
+        )
+        XCTAssertTrue(state.active)
+        XCTAssertFalse(state.partial)
+    }
+
     func testQuickModesForModifierOnlyBinding() {
         XCTAssertEqual(
             RecordingTriggerMode.availableModes(forQuick: true, modifierOnly: true),

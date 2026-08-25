@@ -1493,14 +1493,18 @@ private final class InputMonitor {
         let now = Date().timeIntervalSinceReferenceDate
         let quick = hotkeyConfiguration.quick
         if quick.keyCode == nil, eventChangesModifier(event, for: quick) {
-            let active = quick.matches(
+            let modifierState = ModifierBindingState(
+                bindingCommand: quick.command,
+                bindingOption: quick.option,
+                bindingControl: quick.control,
+                bindingShift: quick.shift,
                 command: normalized.contains(.command),
                 option: normalized.contains(.option),
                 control: normalized.contains(.control),
                 shift: normalized.contains(.shift)
             )
-            let partial = !active && bindingModifierIsActive(quick, flags: normalized)
-            let effectiveActive = active || partial
+            let active = modifierState.active
+            let effectiveActive = active || modifierState.partial
             switch hotkeyConfiguration.quickTriggerMode {
             case .hold:
                 if effectiveActive != modifierQuickActive {
@@ -1528,14 +1532,18 @@ private final class InputMonitor {
 
         let long = hotkeyConfiguration.long
         if long.keyCode == nil, eventChangesModifier(event, for: long) {
-            let active = long.matches(
+            let modifierState = ModifierBindingState(
+                bindingCommand: long.command,
+                bindingOption: long.option,
+                bindingControl: long.control,
+                bindingShift: long.shift,
                 command: normalized.contains(.command),
                 option: normalized.contains(.option),
                 control: normalized.contains(.control),
                 shift: normalized.contains(.shift)
             )
-            let partial = !active && bindingModifierIsActive(long, flags: normalized)
-            let effectiveActive = active || partial
+            let active = modifierState.active
+            let effectiveActive = active || modifierState.partial
             switch hotkeyConfiguration.longTriggerMode {
             case .toggle:
                 if active, !modifierLongActive {
@@ -1617,13 +1625,6 @@ private final class InputMonitor {
         case 56, 60: return binding.shift
         default: return false
         }
-    }
-
-    private func bindingModifierIsActive(_ binding: HotkeyBinding, flags: NSEvent.ModifierFlags) -> Bool {
-        (binding.command && flags.contains(.command))
-            || (binding.option && flags.contains(.option))
-            || (binding.control && flags.contains(.control))
-            || (binding.shift && flags.contains(.shift))
     }
 
     private func beginQuickShortcut() {

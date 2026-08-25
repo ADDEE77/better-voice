@@ -68,6 +68,37 @@ public enum QuickNoteHoldDelay: Sendable {
     }
 }
 
+/// Resolves exact and partial states for a modifier-only shortcut.
+public struct ModifierBindingState: Equatable, Sendable {
+    public let active: Bool
+    public let partial: Bool
+
+    public init(active: Bool, partial: Bool) {
+        self.active = active
+        self.partial = partial
+    }
+
+    public init(
+        bindingCommand: Bool,
+        bindingOption: Bool,
+        bindingControl: Bool,
+        bindingShift: Bool,
+        command: Bool,
+        option: Bool,
+        control: Bool,
+        shift: Bool
+    ) {
+        let binding = [bindingCommand, bindingOption, bindingControl, bindingShift]
+        let pressed = [command, option, control, shift]
+        active = binding == pressed
+
+        let requiredCount = binding.filter { $0 }.count
+        let hasRequiredModifier = zip(binding, pressed).contains { $0 && $1 }
+        let hasUnboundModifier = zip(binding, pressed).contains { !$0 && $1 }
+        partial = !active && requiredCount > 1 && hasRequiredModifier && !hasUnboundModifier
+    }
+}
+
 /// Detects a double-tap on a lone modifier key without treating holds or
 /// modifier+key combos as taps.
 public struct ModifierDoubleTapDetector: Sendable {
