@@ -110,7 +110,7 @@ figcaption { margin: 14px 4px 0; color: var(--muted-foreground); font-size: .8re
 
 .steps-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 44px; }
 .step { padding-top: 18px; border-top: 1px solid var(--border); }
-.step-number { display: block; margin-bottom: 28px; color: var(--primary); font: 500 .78rem/1 Geist Mono, ui-monospace, monospace; }
+.step-number { display: block; margin-bottom: 28px; color: #806300; font: 500 .78rem/1 Geist Mono, ui-monospace, monospace; }
 .step p { margin-bottom: 0; color: var(--muted-foreground); }
 .closing { display: flex; align-items: center; justify-content: space-between; gap: 32px; margin-bottom: 160px; padding: 48px 52px; border-radius: 28px; background: #fff; box-shadow: var(--shadow-resting); }
 .closing h2 { margin-bottom: 12px; }
