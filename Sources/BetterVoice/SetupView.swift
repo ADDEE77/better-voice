@@ -471,6 +471,7 @@ private struct SetupSidebar: View {
             }
         }
         .padding(18)
+        .padding(.top, 10)
         .frame(maxHeight: .infinity, alignment: .top)
         .frame(width: 198)
         .background(Color(nsColor: .controlBackgroundColor))
