@@ -88,6 +88,12 @@ h3 { margin-bottom: 10px; font-size: 1.25rem; }
 .shot-frame { padding: 13px; border-radius: 30px; background: #fff; box-shadow: var(--shadow-floating); }
 .shot-frame img { display: block; width: 100%; height: auto; border-radius: 20px; }
 figcaption { margin: 14px 4px 0; color: var(--muted-foreground); font-size: .8rem; }
+.demo-section { padding-top: 24px; padding-bottom: 104px; }
+.demo-heading { max-width: 620px; margin: 0 auto 28px; text-align: center; }
+.demo-heading .eyebrow { margin-bottom: 12px; }
+.demo-heading h2 { margin-bottom: 0; }
+.x-embed { display: flex; justify-content: center; min-height: 200px; }
+.twitter-tweet { margin: 0 auto !important; }
 
 .section, .steps-section { padding-top: 104px; padding-bottom: 104px; }
 .section-heading { max-width: 620px; margin-bottom: 44px; }
