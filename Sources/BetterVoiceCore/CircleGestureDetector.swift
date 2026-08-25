@@ -26,8 +26,11 @@ public struct CircleGestureDetector {
     private var cooldownUntil: TimeInterval = 0
     private var waitingForExit: CircleGesture?
     private let window: TimeInterval = 6
+    public let minimumAngleDegrees: CGFloat
 
-    public init() {}
+    public init(minimumAngleDegrees: CGFloat = 340) {
+        self.minimumAngleDegrees = min(max(minimumAngleDegrees, 300), 359)
+    }
 
     public mutating func reset() {
         samples.removeAll(keepingCapacity: true)
@@ -110,7 +113,8 @@ public struct CircleGestureDetector {
             while delta < -.pi { delta += 2 * .pi }
             angleTravel += abs(delta)
         }
-        guard angleTravel > 5.93, angleTravel < 8.8 else { return nil }
+        let minimumAngle = minimumAngleDegrees * .pi / 180
+        guard angleTravel > minimumAngle, angleTravel < 8.8 else { return nil }
 
         let pathLength = zip(points, points.dropFirst()).reduce(CGFloat.zero) {
             $0 + hypot($1.1.x - $1.0.x, $1.1.y - $1.0.y)

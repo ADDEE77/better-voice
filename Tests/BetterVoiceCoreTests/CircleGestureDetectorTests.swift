@@ -3,6 +3,32 @@ import XCTest
 @testable import BetterVoiceCore
 
 final class CircleGestureDetectorTests: XCTestCase {
+    func testConfiguredShortcutsExposeQuickAndLongModifierStates() {
+        let configuration = RecordingShortcutConfiguration(
+            quickModifier: .command,
+            longShortcut: .commandShift
+        )
+
+        XCTAssertEqual(
+            configuration.activeStates(command: true, option: false, control: false, shift: false).quick,
+            true
+        )
+        XCTAssertEqual(
+            configuration.activeStates(command: true, option: false, control: false, shift: true).long,
+            true
+        )
+        XCTAssertEqual(
+            configuration.activeStates(command: true, option: true, control: false, shift: false).other,
+            true
+        )
+    }
+
+    func testCircleThresholdDefaultsTo340DegreesAndClampsUserValues() {
+        XCTAssertEqual(CircleGestureDetector().minimumAngleDegrees, 340)
+        XCTAssertEqual(CircleGestureDetector(minimumAngleDegrees: 290).minimumAngleDegrees, 300)
+        XCTAssertEqual(CircleGestureDetector(minimumAngleDegrees: 370).minimumAngleDegrees, 359)
+    }
+
     func testOptionHoldStartsAfterDelayAndStopsOnRelease() {
         var shortcut = RecordingShortcutState()
 

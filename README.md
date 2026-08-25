@@ -4,14 +4,6 @@ Voice dictation with the screen context you point at.
 
 BetterVoice is an experimental, open-source macOS menu-bar app. It transcribes speech locally and captures the full screen whenever you circle something with your pointer, leaving a restrained blue highlight around the referenced area.
 
-<p>
-  <a href="https://buymeacoffee.com/taratdev">
-    <img src="docs/assets/buy-me-a-coffee.svg" alt="Buy me a coffee" height="52">
-  </a>
-</p>
-
-If you enjoy BetterVoice or any of my other experiments, a coffee helps support future projects. ❤️
-
 ![BetterVoice onboarding and visual capture preview](docs/assets/bettervoice-onboarding.png)
 
 ## Use it
@@ -24,9 +16,11 @@ If you enjoy BetterVoice or any of my other experiments, a coffee helps support 
 
 Each circle captures the complete display beneath the pointer. Multiple circles produce screenshots in the same order you referenced them.
 
+Open **Settings…** from the menu-bar icon to choose a microphone, change the dictation language, tune the circle threshold, and customize the shortcuts. In **Shortcuts**, click the current key, wait for **Listening…**, and press the exact combination you want. It appears in place immediately; click **Done** when finished. **Reset shortcuts to defaults** restores both shortcut bindings. The defaults are 340° for circle detection, `⌥` for quick notes, and `⌘⌥` for long explanations.
+
 ## Dictation language
 
-BetterVoice dictates in English by default and nothing about that flow changed. Pick another language under **Dictation Language** in the menu bar, or in **Getting Started…**.
+BetterVoice dictates in English by default and nothing about that flow changed. Pick another language under **Dictation Language** in the menu bar, or in **Settings…**.
 
 English keeps the English-only Parakeet model it has always used, so an existing install downloads nothing new and its transcription is unchanged. Choosing any other language pulls the multilingual model instead, a separate one-time download of roughly the same size. Switching back to English returns to the model already on disk.
 
@@ -37,13 +31,13 @@ Two things follow from the language you pick:
 
 ## Grammar cleanup (Beta)
 
-Grammar cleanup is off by default. To try the beta, open **Getting Started…**, turn on **Grammar cleanup (Beta)**, and press **Download**. BetterVoice then runs each transcript through the tiny, English-focused [`t5-tiny-gec-hone`](https://huggingface.co/rabden/t5-tiny-gec-hone) model. Its quantized ONNX weights and tokenizer are about 36 MB, stored in `~/Library/Application Support/BetterVoice`, and run locally. When enabled, BetterVoice preloads the cached model in the background after launch so the first recording does not pay the initialization cost. The status bar shows “Polishing transcript locally…” while this step runs. If the model cannot download, exceeds its context limit, or returns an incomplete result, BetterVoice keeps the raw transcript so recording still completes.
+Grammar cleanup is off by default. To try the beta, open **Settings…**, turn on **Grammar cleanup (Beta)**, and press **Download**. BetterVoice then runs each transcript through the tiny, English-focused [`t5-tiny-gec-hone`](https://huggingface.co/rabden/t5-tiny-gec-hone) model. Its quantized ONNX weights and tokenizer are about 36 MB, stored in `~/Library/Application Support/BetterVoice`, and run locally. When enabled, BetterVoice preloads the cached model in the background after launch so the first recording does not pay the initialization cost. The status bar shows “Polishing transcript locally…” while this step runs. If the model cannot download, exceeds its context limit, or returns an incomplete result, BetterVoice keeps the raw transcript so recording still completes.
 
 This is intentionally experimental: the model fixes capitalization, punctuation, and sentence structure, and it can occasionally change wording. Delete the `t5-tiny-gec-hone` folder to force a fresh download.
 
 ## Developer vocabulary (Beta)
 
-The branch experiment also includes a fast, zero-download developer pass inspired by [WhisperDictation](https://github.com/sam-pop/WhisperDictation) and [Dictate](https://github.com/0xbrando/dictate). It fixes common casing such as `github` → `GitHub`, `javascript` → `JavaScript`, and `json` → `JSON`, and recognizes spoken acronyms such as “n p m” in terminals and editors. It preserves the transcript’s wording and runs locally in milliseconds. The pass is enabled by default in this branch and can be turned off from **Getting Started…**. The generic grammar model remains an independent, opt-in beta.
+BetterVoice also includes a fast, zero-download developer pass inspired by [WhisperDictation](https://github.com/sam-pop/WhisperDictation) and [Dictate](https://github.com/0xbrando/dictate). It fixes common casing such as `github` → `GitHub`, `javascript` → `JavaScript`, and `json` → `JSON`, and recognizes spoken acronyms such as “n p m” in terminals and editors. It preserves the transcript’s wording and runs locally in milliseconds. The pass is enabled by default and can be turned off from **Settings…**. The generic grammar model remains an independent, opt-in beta.
 
 ## Your own vocabulary
 
@@ -106,15 +100,15 @@ BETTERVOICE_SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)" ./scripts/b
 
 ## If something is not working
 
-Open the menu-bar icon and choose **Getting Started…**. It shows the live state of the microphone, Screen Recording, Accessibility, selected input, local transcription model, and the grammar cleanup toggle. Errors stay visible in a small recovery window with a path back to setup instead of disappearing as a system beep.
+Open the menu-bar icon and choose **Settings…**. It shows the live state of the microphone, Screen Recording, Accessibility, selected input, local transcription model, and the grammar cleanup toggle. Errors stay visible in a small recovery window with a path back to setup instead of disappearing as a system beep.
 
 - **Shortcut does nothing:** enable **Accessibility**, confirm the local model says Ready, and make sure only one BetterVoice process is running. The build script closes the previous process before launching a rebuild.
 - **No screenshot:** enable BetterVoice in **System Settings → Privacy & Security → Screen Recording**, then quit and reopen the app. The setup screen reads the current macOS permission every time; it does not cache an old answer.
 - **Transcript is not inserted:** enable **Accessibility**. The transcript remains on the clipboard and in the saved session when the target app blocks paste events.
 - **Wrong microphone:** choose the device under **Microphone** in the menu-bar menu.
-- **Model download failed:** reopen **Getting Started…** and retry from the model row.
-- **Grammar model download failed:** reopen **Getting Started…** and retry **Download** on the grammar cleanup row.
-- **Try grammar cleanup:** turn on **Grammar cleanup (Beta)** in **Getting Started…**, then press **Download**.
+- **Model download failed:** reopen **Settings…** and retry from the model row.
+- **Grammar model download failed:** reopen **Settings…** and retry **Download** on the grammar cleanup row.
+- **Try grammar cleanup:** turn on **Grammar cleanup (Beta)** in **Settings…**, then press **Download**.
 - **Accidental empty recording:** a session shorter than 2.5 seconds with no speech or circles is discarded quietly. Longer empty sessions are saved without opening an error dialog.
 
 ## Clipboard behavior

@@ -337,7 +337,7 @@ private final class LocalTranscriber {
         guard grammarModelState != .downloading else { return }
         grammarModelState = .downloading
         onStateChange?()
-        grammarModelState = await grammarCorrector.preload() ? .ready : .failed("retry from Getting Started")
+        grammarModelState = await grammarCorrector.preload() ? .ready : .failed("retry from Settings")
         onStateChange?()
     }
 
@@ -1366,10 +1366,18 @@ private enum TextInsertion {
 private final class InputMonitor {
     private var globalFlagsMonitor: Any?
     private var localFlagsMonitor: Any?
+    private var globalKeyDownMonitor: Any?
+    private var localKeyDownMonitor: Any?
+    private var globalKeyUpMonitor: Any?
+    private var localKeyUpMonitor: Any?
     private var mouseTimer: Timer?
     private var pushToTalkTimer: Timer?
     private var lastMouseLocation: CGPoint?
-    private var shortcut = RecordingShortcutState()
+    private var hotkeyConfiguration = HotkeyConfiguration.standard
+    private var modifierQuickActive = false
+    private var modifierLongActive = false
+    private var quickKeyActive = false
+    private var quickHoldActive = false
     private let startPushToTalk: () -> Void
     private let stopPushToTalk: () -> Void
     private let toggleLongForm: () -> Void
@@ -1391,18 +1399,43 @@ private final class InputMonitor {
     }
 
     func start() {
-        shortcut = RecordingShortcutState()
+        resetShortcutState()
         refreshKeyboardMonitoring()
+    }
+
+    func update(configuration: HotkeyConfiguration) {
+        hotkeyConfiguration = configuration
+        resetShortcutState()
     }
 
     func refreshKeyboardMonitoring() {
         if let monitor = globalFlagsMonitor { NSEvent.removeMonitor(monitor) }
+        if let monitor = globalKeyDownMonitor { NSEvent.removeMonitor(monitor) }
+        if let monitor = globalKeyUpMonitor { NSEvent.removeMonitor(monitor) }
         globalFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
             DispatchQueue.main.async { self?.handleFlags(event.modifierFlags) }
+        }
+        globalKeyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            DispatchQueue.main.async { self?.handleKeyDown(event) }
+        }
+        globalKeyUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyUp) { [weak self] event in
+            DispatchQueue.main.async { self?.handleKeyUp(event) }
         }
         if localFlagsMonitor == nil {
             localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
                 DispatchQueue.main.async { self?.handleFlags(event.modifierFlags) }
+                return event
+            }
+        }
+        if localKeyDownMonitor == nil {
+            localKeyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                DispatchQueue.main.async { self?.handleKeyDown(event) }
+                return event
+            }
+        }
+        if localKeyUpMonitor == nil {
+            localKeyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
+                DispatchQueue.main.async { self?.handleKeyUp(event) }
                 return event
             }
         }
@@ -1427,52 +1460,122 @@ private final class InputMonitor {
     func stop() {
         if let monitor = globalFlagsMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = localFlagsMonitor { NSEvent.removeMonitor(monitor) }
+        if let monitor = globalKeyDownMonitor { NSEvent.removeMonitor(monitor) }
+        if let monitor = localKeyDownMonitor { NSEvent.removeMonitor(monitor) }
+        if let monitor = globalKeyUpMonitor { NSEvent.removeMonitor(monitor) }
+        if let monitor = localKeyUpMonitor { NSEvent.removeMonitor(monitor) }
         mouseTimer?.invalidate()
-        pushToTalkTimer?.invalidate()
         globalFlagsMonitor = nil
         localFlagsMonitor = nil
+        globalKeyDownMonitor = nil
+        localKeyDownMonitor = nil
+        globalKeyUpMonitor = nil
+        localKeyUpMonitor = nil
         mouseTimer = nil
-        pushToTalkTimer = nil
         lastMouseLocation = nil
+        resetShortcutState()
     }
 
     private func handleFlags(_ flags: NSEvent.ModifierFlags) {
         let normalized = flags.intersection(.deviceIndependentFlagsMask)
-        let blocked = normalized.contains(.shift) || normalized.contains(.control)
-        apply(shortcut.flagsChanged(
-            command: normalized.contains(.command),
-            option: normalized.contains(.option),
-            otherModifier: blocked
-        ))
-    }
-
-    private func apply(_ actions: [RecordingShortcutAction]) {
-        for action in actions {
-            switch action {
-            case .schedulePushToTalk:
-                pushToTalkTimer?.invalidate()
-                let timer = Timer(timeInterval: 0.14, repeats: false) { [weak self] _ in
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self else { return }
-                        self.pushToTalkTimer = nil
-                        self.apply(self.shortcut.pushToTalkDelayElapsed())
-                    }
-                }
-                pushToTalkTimer = timer
-                RunLoop.main.add(timer, forMode: .common)
-            case .cancelPendingPushToTalk:
-                pushToTalkTimer?.invalidate()
-                pushToTalkTimer = nil
-            case .startPushToTalk:
-                startPushToTalk()
-            case .stopPushToTalk:
-                stopPushToTalk()
-            case .toggleLongForm:
-                toggleLongForm()
-            case .promoteToLongForm:
-                promoteToLongForm()
+        let quick = hotkeyConfiguration.quick
+        if quick.keyCode == nil {
+            let active = quick.matches(
+                command: normalized.contains(.command),
+                option: normalized.contains(.option),
+                control: normalized.contains(.control),
+                shift: normalized.contains(.shift)
+            )
+            if active != modifierQuickActive {
+                modifierQuickActive = active
+                active ? beginQuickShortcut() : endQuickShortcut()
             }
         }
+
+        let long = hotkeyConfiguration.long
+        if long.keyCode == nil {
+            let active = long.matches(
+                command: normalized.contains(.command),
+                option: normalized.contains(.option),
+                control: normalized.contains(.control),
+                shift: normalized.contains(.shift)
+            )
+            if active, !modifierLongActive {
+                triggerLongShortcut()
+            }
+            modifierLongActive = active
+        }
+    }
+
+    private func handleKeyDown(_ event: NSEvent) {
+        guard !event.isARepeat else { return }
+        if matches(hotkeyConfiguration.long, event: event) {
+            triggerLongShortcut()
+            return
+        }
+        if matches(hotkeyConfiguration.quick, event: event), !quickKeyActive {
+            quickKeyActive = true
+            beginQuickShortcut()
+        }
+    }
+
+    private func handleKeyUp(_ event: NSEvent) {
+        guard quickKeyActive,
+              matches(hotkeyConfiguration.quick, event: event) else { return }
+        quickKeyActive = false
+        endQuickShortcut()
+    }
+
+    private func matches(_ binding: HotkeyBinding, event: NSEvent) -> Bool {
+        guard let keyCode = binding.keyCode, event.keyCode == keyCode else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        return binding.matches(
+            command: flags.contains(.command),
+            option: flags.contains(.option),
+            control: flags.contains(.control),
+            shift: flags.contains(.shift)
+        )
+    }
+
+    private func beginQuickShortcut() {
+        guard !quickHoldActive else { return }
+        quickHoldActive = true
+        pushToTalkTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.14, repeats: false) { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.pushToTalkTimer = nil
+                self.startPushToTalk()
+            }
+        }
+        pushToTalkTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func endQuickShortcut() {
+        quickHoldActive = false
+        pushToTalkTimer?.invalidate()
+        pushToTalkTimer = nil
+        stopPushToTalk()
+    }
+
+    private func triggerLongShortcut() {
+        pushToTalkTimer?.invalidate()
+        pushToTalkTimer = nil
+        if quickHoldActive {
+            promoteToLongForm()
+        } else {
+            toggleLongForm()
+        }
+    }
+
+    private func resetShortcutState() {
+        pushToTalkTimer?.invalidate()
+        pushToTalkTimer = nil
+        modifierQuickActive = false
+        modifierLongActive = false
+        quickKeyActive = false
+        quickHoldActive = false
     }
 
     private func sampleMouse() {
@@ -1502,6 +1605,9 @@ private enum StatusIconState {
 
 @MainActor
 private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private static let circleMinimumAngleKey = "circleMinimumAngleDegrees"
+    private static let quickHotkeyKey = "quickRecordingHotkey"
+    private static let longHotkeyKey = "longRecordingHotkey"
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let microphones = MicrophoneManager()
     private let recorder = AudioRecorder()
@@ -1531,6 +1637,21 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     private var textInsertionContext: TextInsertion.Context?
     private var statusPulse = false
     private var reduceMotion = false
+    private var hotkeyConfiguration: HotkeyConfiguration {
+        HotkeyConfiguration(
+            quick: loadHotkey(forKey: Self.quickHotkeyKey, fallback: .option),
+            long: loadHotkey(forKey: Self.longHotkeyKey, fallback: .commandOption)
+        )
+    }
+
+    private var circleMinimumAngleDegrees: Double {
+        let stored = UserDefaults.standard.double(forKey: Self.circleMinimumAngleKey)
+        return min(max(stored == 0 ? 340 : stored, 300), 359)
+    }
+
+    private var quickShortcutLabel: String { hotkeyConfiguration.quick.label }
+    private var longShortcutLabel: String { hotkeyConfiguration.long.label }
+
     private lazy var setupModel: SetupModel = {
         let model = SetupModel()
         model.requestMicrophone = { [weak self] in self?.requestMicrophoneAuthorization() }
@@ -1558,6 +1679,12 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         model.setDeveloperCleanup = { [weak self] enabled in
             self?.transcriber.setDeveloperCleanupEnabled(enabled)
         }
+        model.setCircleMinimumAngle = { [weak self] degrees in
+            self?.setCircleMinimumAngle(degrees)
+        }
+        model.setHotkeyConfiguration = { [weak self] configuration in
+            self?.setHotkeyConfiguration(configuration)
+        }
         model.refresh = { [weak self] in self?.refreshSetupModel() }
         model.complete = { [weak self] in
             UserDefaults.standard.set(true, forKey: "completedOnboarding")
@@ -1574,16 +1701,16 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         setStatusIcon(.idle)
         statusItem.button?.imagePosition = .imageOnly
         statusItem.button?.imageScaling = .scaleProportionallyDown
-        statusItem.button?.toolTip = "BetterVoice — hold ⌥ or press ⌘⌥ • Microphone: \(microphones.selectedLabel)"
+        statusItem.button?.toolTip = "BetterVoice — hold \(quickShortcutLabel) or press \(longShortcutLabel) • Microphone: \(microphones.selectedLabel)"
 
         let menu = NSMenu()
-        let statusMenuItem = NSMenuItem(title: "Ready • hold ⌥ or press ⌘⌥", action: nil, keyEquivalent: "")
+        let statusMenuItem = NSMenuItem(title: "Ready • hold \(quickShortcutLabel) or press \(longShortcutLabel)", action: nil, keyEquivalent: "")
         statusMenuItem.isEnabled = false
         self.statusMenuItem = statusMenuItem
         menu.addItem(statusMenuItem)
         menu.addItem(NSMenuItem.separator())
 
-        let recordingItem = NSMenuItem(title: "Start long recording (⌘⌥)", action: #selector(toggleRecording), keyEquivalent: "")
+        let recordingItem = NSMenuItem(title: "Start long recording (\(longShortcutLabel))", action: #selector(toggleRecording), keyEquivalent: "")
         recordingItem.target = self
         recordingMenuItem = recordingItem
         menu.addItem(recordingItem)
@@ -1613,7 +1740,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         menu.addItem(recentItem)
         menu.addItem(NSMenuItem.separator())
 
-        let setupItem = NSMenuItem(title: "Getting Started…", action: #selector(showSetup), keyEquivalent: ",")
+        let setupItem = NSMenuItem(title: "Settings…", action: #selector(showSetup), keyEquivalent: ",")
         setupItem.target = self
         menu.addItem(setupItem)
         let vocabularyItem = NSMenuItem(title: "Edit Vocabulary…", action: #selector(editVocabulary), keyEquivalent: "")
@@ -1661,7 +1788,11 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
                 self?.handleMouse(quartzPoint: quartzPoint)
             }
         )
+        inputMonitor?.update(configuration: hotkeyConfiguration)
         inputMonitor?.start()
+        setupModel.hotkeyConfiguration = hotkeyConfiguration
+        setupModel.circleMinimumAngleDegrees = circleMinimumAngleDegrees
+        updateShortcutStatus()
         do {
             try SessionStorage.prune()
         } catch {
@@ -1875,6 +2006,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
                 name: device.name
             )
         }
+        setupModel.circleMinimumAngleDegrees = circleMinimumAngleDegrees
+        setupModel.hotkeyConfiguration = hotkeyConfiguration
         setupModel.grammarSelectionEnabled = state == .idle
         switch transcriber.state {
         case .missing:
@@ -1921,6 +2054,55 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     @objc private func showSetup() {
         refreshSetupModel()
         setupWindow.show(model: setupModel)
+    }
+
+    private func setCircleMinimumAngle(_ degrees: Double) {
+        guard state == .idle else { return }
+        let value = min(max(degrees, 300), 359)
+        UserDefaults.standard.set(value, forKey: Self.circleMinimumAngleKey)
+        setupModel.circleMinimumAngleDegrees = value
+        showStatus("Circle detection: \(Int(value.rounded()))°", resetAfter: 3)
+    }
+
+    private func loadHotkey(forKey key: String, fallback: HotkeyBinding) -> HotkeyBinding {
+        guard let values = UserDefaults.standard.dictionary(forKey: key) else { return fallback }
+        return HotkeyBinding(
+            keyCode: (values["keyCode"] as? NSNumber).map { UInt16(truncating: $0) },
+            command: values["command"] as? Bool ?? false,
+            option: values["option"] as? Bool ?? false,
+            control: values["control"] as? Bool ?? false,
+            shift: values["shift"] as? Bool ?? false,
+            keyName: values["keyName"] as? String ?? ""
+        )
+    }
+
+    private func saveHotkey(_ binding: HotkeyBinding, forKey key: String) {
+        var values: [String: Any] = [
+            "command": binding.command,
+            "option": binding.option,
+            "control": binding.control,
+            "shift": binding.shift,
+            "keyName": binding.keyName
+        ]
+        if let keyCode = binding.keyCode {
+            values["keyCode"] = Int(keyCode)
+        }
+        UserDefaults.standard.set(values, forKey: key)
+    }
+
+    private func setHotkeyConfiguration(_ configuration: HotkeyConfiguration) {
+        guard state == .idle else { return }
+        saveHotkey(configuration.quick, forKey: Self.quickHotkeyKey)
+        saveHotkey(configuration.long, forKey: Self.longHotkeyKey)
+        inputMonitor?.update(configuration: configuration)
+        setupModel.hotkeyConfiguration = configuration
+        updateShortcutStatus()
+    }
+
+    private func updateShortcutStatus() {
+        statusItem.button?.toolTip = "BetterVoice — hold \(quickShortcutLabel) or press \(longShortcutLabel) • Microphone: \(microphones.selectedLabel)"
+        statusMenuItem?.title = "Ready • hold \(quickShortcutLabel) or press \(longShortcutLabel)"
+        recordingMenuItem?.title = "Start long recording (\(longShortcutLabel))"
     }
 
     /// Creates the template on demand too: a user who cleared the file still gets a
@@ -2011,7 +2193,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             await transcriber.downloadModel()
             switch transcriber.state {
             case .ready:
-                showStatus("Local model ready • hold ⌥ or press ⌘⌥", resetAfter: 4)
+                showStatus("Local model ready • hold \(quickShortcutLabel) or press \(longShortcutLabel)", resetAfter: 4)
             case .failed(let message):
                 showError("Model download failed: \(message)")
             default:
@@ -2063,7 +2245,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         } else if state == .recording, recordingMode == .pushToTalk {
             recordingMode = .longForm
             showStatus("Recording • long-form mode")
-            updateMenuTitle("Stop long recording (⌘⌥)", enabled: true)
+            updateMenuTitle("Stop long recording (\(longShortcutLabel))", enabled: true)
         }
     }
 
@@ -2077,6 +2259,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             output = try SessionOutput()
             captureTasks.removeAll(keepingCapacity: true)
             textInsertionContext = nil
+            detector = CircleGestureDetector(minimumAngleDegrees: CGFloat(circleMinimumAngleDegrees))
             detector.reset()
             transcript = ""
             recordingSounds.play(.started)
@@ -2105,7 +2288,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             setStatusIcon(.recording)
             showStatus("Recording • Microphone: \(selectedMicrophone.name)")
             updateMenuTitle(
-                mode == .pushToTalk ? "Release ⌥ to stop" : "Stop long recording (⌘⌥)",
+                mode == .pushToTalk ? "Release \(quickShortcutLabel) to stop" : "Stop long recording (\(longShortcutLabel))",
                 enabled: true
             )
         } catch {
@@ -2138,7 +2321,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         }
         setStatusIcon(.finishing)
         showStatus("Finishing…")
-        updateMenuTitle("Finishing… (⌘⌥)", enabled: false)
+        updateMenuTitle("Finishing… (\(longShortcutLabel))", enabled: false)
         do {
             let audioURL = try recorder.stop()
             recordingSounds.play(.finished)
@@ -2327,7 +2510,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         refreshModelMenu()
         refreshLanguageMenu()
         setStatusIcon(.idle)
-        updateMenuTitle("Start long recording (⌘⌥)", enabled: true)
+        updateMenuTitle("Start long recording (\(longShortcutLabel))", enabled: true)
     }
 
     private func handleMouse(quartzPoint: CGPoint) {
@@ -2484,7 +2667,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         let timer = Timer(timeInterval: resetAfter, repeats: false) { [weak self] _ in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.state == .idle else { return }
-                self.showStatus("Ready • hold ⌥ or press ⌘⌥")
+                self.showStatus("Ready • hold \(self.quickShortcutLabel) or press \(self.longShortcutLabel)")
             }
         }
         statusFeedbackTimer = timer
