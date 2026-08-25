@@ -110,7 +110,7 @@ figcaption { margin: 14px 4px 0; color: var(--muted-foreground); font-size: .8re
 .step { padding-top: 18px; border-top: 1px solid var(--border); }
 .step-number { display: block; margin-bottom: 28px; color: var(--primary); font: 500 .78rem/1 Geist Mono, ui-monospace, monospace; }
 .step p { margin-bottom: 0; color: var(--muted-foreground); }
-.closing { display: flex; align-items: center; justify-content: space-between; gap: 32px; margin-bottom: 104px; padding: 48px 52px; border-radius: 28px; background: #fff; box-shadow: var(--shadow-resting); }
+.closing { display: flex; align-items: center; justify-content: space-between; gap: 32px; margin-bottom: 160px; padding: 48px 52px; border-radius: 28px; background: #fff; box-shadow: var(--shadow-resting); }
 .closing h2 { margin-bottom: 12px; }
 .closing p { max-width: 580px; margin-bottom: 0; }
 .site-footer { padding: 32px 16px; background: #fff; }
@@ -135,7 +135,7 @@ figcaption { margin: 14px 4px 0; color: var(--muted-foreground); font-size: .8re
   h1 { font-size: clamp(2.8rem, 13vw, 4rem); }
   .hero, .section, .context-section, .steps-section { padding-top: 76px; padding-bottom: 76px; }
   .hero { padding-top: 126px; }
-  .closing { margin-bottom: 76px; padding: 30px 24px; }
+  .closing { margin-bottom: 104px; padding: 30px 24px; }
   .signal-row { grid-template-columns: 1fr auto; gap: 4px 12px; padding-block: 14px; }
   .signal-value { grid-column: 1 / -1; grid-row: 2; }
 }
