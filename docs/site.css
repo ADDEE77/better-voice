@@ -67,7 +67,7 @@ nav a { display: inline-flex; align-items: center; gap: 6px; }
 nav a, .footer-links a { transition: color .16s ease; }
 nav a:hover, .footer-links a:hover, .text-link:hover { color: var(--ink); }
 
-main { background: var(--background); }
+main { padding-bottom: 160px; background: var(--background); }
 .hero { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 64px; align-items: center; min-height: 720px; padding-top: 128px; padding-bottom: 92px; }
 .eyebrow { margin: 0 0 16px; color: var(--muted-foreground); font-size: .72rem; font-weight: 500; letter-spacing: .12em; text-transform: uppercase; }
 h1, h2, h3, p { margin-top: 0; }
@@ -112,7 +112,7 @@ figcaption { margin: 14px 4px 0; color: var(--muted-foreground); font-size: .8re
 .step { padding-top: 18px; border-top: 1px solid var(--border); }
 .step-number { display: block; margin-bottom: 28px; color: #806300; font: 500 .78rem/1 Geist Mono, ui-monospace, monospace; }
 .step p { margin-bottom: 0; color: var(--muted-foreground); }
-.closing { display: flex; align-items: center; justify-content: space-between; gap: 32px; margin-bottom: 160px; padding: 48px 52px; border-radius: 28px; background: #fff; box-shadow: var(--shadow-resting); }
+.closing { display: flex; align-items: center; justify-content: space-between; gap: 32px; margin-bottom: 0; padding: 48px 52px; border-radius: 28px; background: #fff; box-shadow: var(--shadow-resting); }
 .closing h2 { margin-bottom: 12px; }
 .closing p { max-width: 580px; margin-bottom: 0; }
 .site-footer { padding: 32px 16px; background: #fff; }
@@ -137,7 +137,8 @@ figcaption { margin: 14px 4px 0; color: var(--muted-foreground); font-size: .8re
   h1 { font-size: clamp(2.8rem, 13vw, 4rem); }
   .hero, .section, .context-section, .steps-section { padding-top: 76px; padding-bottom: 76px; }
   .hero { padding-top: 126px; }
-  .closing { margin-bottom: 104px; padding: 30px 24px; }
+  main { padding-bottom: 104px; }
+  .closing { padding: 30px 24px; }
   .signal-row { grid-template-columns: 1fr auto; gap: 4px 12px; padding-block: 14px; }
   .signal-value { grid-column: 1 / -1; grid-row: 2; }
 }
