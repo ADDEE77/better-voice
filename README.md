@@ -4,7 +4,7 @@ Voice dictation with the screen context you point at.
 
 BetterVoice is an experimental, open-source macOS menu-bar app. It transcribes speech locally and captures the full screen whenever you circle something with your pointer, leaving a restrained blue highlight around the referenced area.
 
-![BetterVoice first-run onboarding](docs/assets/bettervoice-onboarding.png)
+![BetterVoice settings overview](docs/assets/bettervoice-settings-overview.png)
 
 ## Use it
 

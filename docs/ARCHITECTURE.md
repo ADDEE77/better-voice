@@ -24,6 +24,7 @@ Better Voice is a small native Swift app with one executable target and one test
 ```text
 Sources/BetterVoice/main.swift                 macOS app and system integrations
 Sources/BetterVoice/SetupView.swift            onboarding and actionable recovery UI
+Resources/BetterVoice.icns                      branded macOS app icon
 Sources/BetterVoice/GrammarCorrector.swift     optional tiny local grammar pass
 Sources/BetterVoiceCore/DeveloperTextCleanup.swift
                                                 zero-download developer vocabulary pass
