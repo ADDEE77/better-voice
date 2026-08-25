@@ -86,20 +86,9 @@ public enum DeveloperTextCleanup {
         return result
     }
 
-    /// Characters that continue a word. The accented Latin ranges belong here:
-    /// without them an accented letter reads as a separator, so `api` matches as a
-    /// whole word inside `apiário` and the pass rewrites ordinary prose.
-    ///
-    /// The combining marks cover the same letters in decomposed form, where the
-    /// accent is its own scalar. Without that range `ide` matches inside a
-    /// decomposed `idéia`, since the scalar after `ide` is the accent rather than
-    /// the letter it belongs to. Widening the boundary is preferred over
-    /// normalizing the input, which would hand the user back text in a different
-    /// form than the one they dictated into.
-    private static let wordCharacters =
-        "A-Za-z0-9_./\\-"
-        + "\u{00C0}-\u{00D6}\u{00D8}-\u{00F6}\u{00F8}-\u{00FF}"
-        + "\u{0300}-\u{036F}"
+    /// Unicode letters and combining marks continue a word. The ASCII punctuation
+    /// keeps filenames, domains, paths, and hyphenated compounds protected too.
+    private static let wordCharacters = #"\p{L}\p{M}0-9_./\-"#
 
     private static func replaceWholePhrase(_ source: String, with replacement: String, in text: String) -> String {
         guard let expression = try? NSRegularExpression(

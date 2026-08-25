@@ -86,6 +86,13 @@ final class DeveloperTextCleanupTests: XCTestCase {
         )
     }
 
+    func testExtendedLatinLettersAlsoStopAMatch() {
+        XCTAssertEqual(
+            DeveloperTextCleanup.apply("ideš domov"),
+            "ideš domov"
+        )
+    }
+
     /// macOS hands text around in both normalization forms. Decomposed, the accent
     /// is a separate combining scalar, so the term sits next to a mark rather than
     /// next to a letter.
@@ -96,9 +103,7 @@ final class DeveloperTextCleanupTests: XCTestCase {
 
     func testTheTextKeepsItsOriginalNormalizationForm() {
         let decomposed = "a última resposta é json".decomposedStringWithCanonicalMapping
-        XCTAssertEqual(
-            DeveloperTextCleanup.apply(decomposed),
-            "a última resposta é JSON".decomposedStringWithCanonicalMapping
-        )
+        let expected = "a última resposta é JSON".decomposedStringWithCanonicalMapping
+        XCTAssertEqual(Array(DeveloperTextCleanup.apply(decomposed).utf8), Array(expected.utf8))
     }
 }
