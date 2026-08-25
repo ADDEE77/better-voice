@@ -75,6 +75,8 @@ The release targets macOS 14+ on Apple Silicon. This experimental build is signe
 
 The first launch opens a guided setup: download the local model, grant microphone and Accessibility access, optionally enable Screen Recording for visual context, choose your microphone, and review the shortcut walkthrough. After setup, open **Settings…** from the menu bar any time to revisit these choices.
 
+BetterVoice stays available in the menu bar and Dock while it is running. Choose **Quit BetterVoice** from either menu before deleting the app. If the UI is unavailable, run `pkill -x BetterVoice`, then move `BetterVoice.app` to the Trash.
+
 ## Install from source
 
 Requirements: macOS 14+, Swift 6/Xcode command-line tools, and a local Apple code-signing identity.

@@ -17,7 +17,7 @@
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSUIElement</key>
-	<true/>
+	<false/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>BetterVoice records your voice while you describe screen changes.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

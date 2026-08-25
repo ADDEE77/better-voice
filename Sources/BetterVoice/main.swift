@@ -1810,6 +1810,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         refreshSetupModel()
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            showSetup()
+        }
+        return true
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         shutdown()
     }
@@ -2300,7 +2307,14 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             output = nil
             recordingStartedAt = nil
             recordingMode = nil
-            showError(error.localizedDescription)
+            switch error {
+            case BetterVoiceError.localModelUnavailable:
+                showStatus("Download the local model in Settings…", resetAfter: 5)
+            case BetterVoiceError.microphoneUnavailable:
+                showStatus("Select a microphone in Settings…", resetAfter: 5)
+            default:
+                showError(error.localizedDescription)
+            }
         }
     }
 
@@ -2749,5 +2763,5 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
 let application = NSApplication.shared
 private let delegate = MainActor.assumeIsolated { AppController() }
 application.delegate = delegate
-application.setActivationPolicy(.accessory)
+application.setActivationPolicy(.regular)
 application.run()

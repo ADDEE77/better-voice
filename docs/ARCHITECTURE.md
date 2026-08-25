@@ -17,7 +17,7 @@ Better Voice is a small native Swift app with one executable target and one test
 
 ## First-run onboarding
 
-`AppController` opens `OnboardingView` until `completedOnboarding` is set. The guided flow keeps setup sequential: download the local speech model, request microphone and Accessibility permissions, offer Screen Recording as an optional visual-context permission, choose the microphone, then explain the two recording shortcuts and circle gesture. Later visits use `SetupView` for the full settings navigator.
+`AppController` opens `OnboardingView` until `completedOnboarding` is set. The guided flow keeps setup sequential: download the local speech model, request microphone and Accessibility permissions, offer Screen Recording as an optional visual-context permission, choose the microphone, then explain the two recording shortcuts and circle gesture. Later visits use `SetupView` for the full settings navigator. The app remains visible in the Dock and menu bar so users can quit it through standard macOS controls; `applicationShouldHandleReopen` restores Settings when the Dock icon is reopened.
 
 ## Repository map
 
