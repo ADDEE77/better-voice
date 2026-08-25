@@ -1538,7 +1538,7 @@ private final class InputMonitor {
             let effectiveActive = active || partial
             switch hotkeyConfiguration.longTriggerMode {
             case .toggle:
-                if effectiveActive, !modifierLongActive {
+                if active, !modifierLongActive {
                     triggerLongShortcut()
                 }
             case .doubleTap:
@@ -1551,7 +1551,7 @@ private final class InputMonitor {
             case .hold:
                 break
             }
-            modifierLongActive = effectiveActive
+            modifierLongActive = active
         }
     }
 
