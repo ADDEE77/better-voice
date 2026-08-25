@@ -86,9 +86,13 @@ public enum DeveloperTextCleanup {
         return result
     }
 
+    /// Unicode letters and combining marks continue a word. The ASCII punctuation
+    /// keeps filenames, domains, paths, and hyphenated compounds protected too.
+    private static let wordCharacters = #"\p{L}\p{M}0-9_./\-"#
+
     private static func replaceWholePhrase(_ source: String, with replacement: String, in text: String) -> String {
         guard let expression = try? NSRegularExpression(
-            pattern: "(?i)(?<![A-Za-z0-9_./-])\(NSRegularExpression.escapedPattern(for: source))(?![A-Za-z0-9_./-])"
+            pattern: "(?i)(?<![\(wordCharacters)])\(NSRegularExpression.escapedPattern(for: source))(?![\(wordCharacters)])"
         ) else { return text }
         let mutable = NSMutableString(string: text)
         let range = NSRange(location: 0, length: mutable.length)
