@@ -20,7 +20,7 @@ If you enjoy BetterVoice or any of my other experiments, a coffee helps support 
 - Press `⌘⌥` for a long explanation. Press it again to finish.
 - A soft native sound confirms when listening starts and when it stops.
 - While recording, circle any important UI with the pointer. A blue trail follows your movement and a pulse confirms each capture.
-- BetterVoice inserts the transcript into the selected text field when macOS allows it. Long explanations also copy the transcript and captured images to the clipboard; quick notes leave your existing clipboard unchanged.
+- BetterVoice inserts the transcript into the selected text field when macOS allows it, then pastes captured images into that same field when both transcript and screen context exist. Long explanations leave the captured images on the clipboard; quick notes restore your previous clipboard afterward.
 
 Each circle captures the complete display beneath the pointer. Multiple circles produce screenshots in the same order you referenced them.
 
@@ -85,7 +85,7 @@ Open the menu-bar icon and choose **Getting Started…**. It shows the live stat
 
 ## Clipboard behavior
 
-macOS lets one clipboard contain text, rich text, and image representations, but each destination decides which representation to accept. For a long explanation, BetterVoice captures the focused app and field when recording stops, puts only the transcript on the clipboard, and sends one `⌘V` directly to that captured app. It then restores the full text-plus-image clipboard. A quick `⌥` note uses a temporary clipboard only for insertion and restores the clipboard you had before recording.
+macOS lets one clipboard contain text, rich text, and image representations, but each destination decides which representation to accept. For either mode, BetterVoice captures the focused app and field when recording stops, puts the transcript on the clipboard, and sends one `⌘V` directly to that captured app. When both transcript and screen context exist, it then puts the captured images on the clipboard and sends a second `⌘V` to the same app. Long explanations leave those images available on the clipboard; quick `⌥` notes restore the clipboard you had before recording. If the clipboard changes during the handoff, image insertion is skipped to avoid overwriting user data.
 
 ## Privacy and storage
 
@@ -95,7 +95,7 @@ macOS lets one clipboard contain text, rich text, and image representations, but
 - Saved sessions are capped at 500 MB, including during an active capture; the oldest are removed first.
 - The local speech model is a separate one-time cache of roughly 500 MB.
 - Recordings stop safely at 20 minutes, and abandoned temporary audio is removed on launch.
-- Use **Open Saved Sessions** or **Clear Saved Sessions…** from the menu bar at any time.
+- Use **Recent** in the menu bar to recover the latest transcript and images, or use **Open Saved Sessions** and **Clear Saved Sessions…** for the full local archive.
 
 A session contains:
 
