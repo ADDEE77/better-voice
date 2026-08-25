@@ -111,6 +111,7 @@ Open the menu-bar icon and choose **Settings…**. It shows the live state of th
 - **No screenshot:** enable BetterVoice in **System Settings → Privacy & Security → Screen Recording**, then quit and reopen the app. The setup screen reads the current macOS permission every time; it does not cache an old answer.
 - **Transcript is not inserted:** enable **Accessibility**. The transcript remains on the clipboard and in the saved session when the target app blocks paste events.
 - **Wrong microphone:** choose the device under **Microphone** in the menu-bar menu.
+- **Cannot delete the app:** choose **Quit BetterVoice** from the Dock or menu bar first. If it is still running, run `pkill -x BetterVoice` in Terminal, then move `BetterVoice.app` to the Trash.
 - **Model download failed:** reopen **Settings…** and retry from the model row.
 - **Grammar model download failed:** reopen **Settings…** and retry **Download** on the grammar cleanup row.
 - **Try grammar cleanup:** turn on **Grammar cleanup (Beta)** in **Settings…**, then press **Download**.
