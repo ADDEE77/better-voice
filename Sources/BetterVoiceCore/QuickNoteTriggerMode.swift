@@ -15,12 +15,28 @@ public enum QuickNoteTriggerMode: String, Sendable, CaseIterable {
     }
 
     public var detail: String {
+        detail(holdDelayMilliseconds: QuickNoteHoldDelay.defaultMilliseconds)
+    }
+
+    public func detail(holdDelayMilliseconds: Int) -> String {
         switch self {
         case .hold:
-            return "Hold this shortcut to record. Release it to finish."
+            let delay = QuickNoteHoldDelay.clamp(holdDelayMilliseconds)
+            return "Hold this shortcut for \(delay) ms to record. Release it to finish."
         case .doubleTap:
             return "Double-tap this shortcut to start. Double-tap again to finish."
         }
+    }
+}
+
+/// Hold delay before quick-note recording starts.
+public enum QuickNoteHoldDelay: Sendable {
+    public static let defaultMilliseconds = 140
+    public static let minimumMilliseconds = 50
+    public static let maximumMilliseconds = 500
+
+    public static func clamp(_ milliseconds: Int) -> Int {
+        min(max(milliseconds, minimumMilliseconds), maximumMilliseconds)
     }
 }
 

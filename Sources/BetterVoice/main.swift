@@ -1559,7 +1559,10 @@ private final class InputMonitor {
         guard !quickHoldActive else { return }
         quickHoldActive = true
         pushToTalkTimer?.invalidate()
-        let timer = Timer(timeInterval: 0.14, repeats: false) { [weak self] _ in
+        let timer = Timer(
+            timeInterval: TimeInterval(hotkeyConfiguration.quickHoldDelayMilliseconds) / 1000,
+            repeats: false
+        ) { [weak self] _ in
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.pushToTalkTimer = nil
@@ -1646,6 +1649,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     private static let quickHotkeyKey = "quickRecordingHotkey"
     private static let longHotkeyKey = "longRecordingHotkey"
     private static let quickNoteTriggerModeKey = "quickNoteTriggerMode"
+    private static let quickNoteHoldDelayKey = "quickNoteHoldDelayMilliseconds"
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let microphones = MicrophoneManager()
     private let recorder = AudioRecorder()
@@ -1679,7 +1683,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         HotkeyConfiguration(
             quick: loadHotkey(forKey: Self.quickHotkeyKey, fallback: .option),
             long: loadHotkey(forKey: Self.longHotkeyKey, fallback: .commandOption),
-            quickTriggerMode: loadQuickNoteTriggerMode()
+            quickTriggerMode: loadQuickNoteTriggerMode(),
+            quickHoldDelayMilliseconds: loadQuickNoteHoldDelay()
         )
     }
 
@@ -1742,6 +1747,9 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         }
         model.setQuickNoteTriggerMode = { [weak self] mode in
             self?.setQuickNoteTriggerMode(mode)
+        }
+        model.setQuickNoteHoldDelay = { [weak self] milliseconds in
+            self?.setQuickNoteHoldDelay(milliseconds)
         }
         model.refresh = { [weak self] in self?.refreshSetupModel() }
         model.complete = { [weak self] in
@@ -1850,6 +1858,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         inputMonitor?.start()
         setupModel.hotkeyConfiguration = hotkeyConfiguration
         setupModel.quickNoteTriggerMode = hotkeyConfiguration.quickTriggerMode
+        setupModel.quickNoteHoldDelayMilliseconds = hotkeyConfiguration.quickHoldDelayMilliseconds
         setupModel.circleMinimumAngleDegrees = circleMinimumAngleDegrees
         updateShortcutStatus()
         do {
@@ -2075,6 +2084,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         setupModel.circleMinimumAngleDegrees = circleMinimumAngleDegrees
         setupModel.hotkeyConfiguration = hotkeyConfiguration
         setupModel.quickNoteTriggerMode = hotkeyConfiguration.quickTriggerMode
+        setupModel.quickNoteHoldDelayMilliseconds = hotkeyConfiguration.quickHoldDelayMilliseconds
         setupModel.grammarSelectionEnabled = state == .idle
         switch transcriber.state {
         case .missing:
@@ -2169,14 +2179,24 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         return mode
     }
 
+    private func loadQuickNoteHoldDelay() -> Int {
+        let stored = UserDefaults.standard.integer(forKey: Self.quickNoteHoldDelayKey)
+        return QuickNoteHoldDelay.clamp(stored == 0 ? QuickNoteHoldDelay.defaultMilliseconds : stored)
+    }
+
     private func setHotkeyConfiguration(_ configuration: HotkeyConfiguration) {
         guard state == .idle else { return }
         saveHotkey(configuration.quick, forKey: Self.quickHotkeyKey)
         saveHotkey(configuration.long, forKey: Self.longHotkeyKey)
         UserDefaults.standard.set(configuration.quickTriggerMode.rawValue, forKey: Self.quickNoteTriggerModeKey)
+        UserDefaults.standard.set(
+            QuickNoteHoldDelay.clamp(configuration.quickHoldDelayMilliseconds),
+            forKey: Self.quickNoteHoldDelayKey
+        )
         inputMonitor?.update(configuration: configuration)
         setupModel.hotkeyConfiguration = configuration
         setupModel.quickNoteTriggerMode = configuration.quickTriggerMode
+        setupModel.quickNoteHoldDelayMilliseconds = configuration.quickHoldDelayMilliseconds
         updateShortcutStatus()
     }
 
@@ -2184,6 +2204,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         guard state == .idle else { return }
         var configuration = hotkeyConfiguration
         configuration.quickTriggerMode = mode
+        setHotkeyConfiguration(configuration)
+    }
+
+    private func setQuickNoteHoldDelay(_ milliseconds: Int) {
+        guard state == .idle else { return }
+        var configuration = hotkeyConfiguration
+        configuration.quickHoldDelayMilliseconds = QuickNoteHoldDelay.clamp(milliseconds)
         setHotkeyConfiguration(configuration)
     }
 

@@ -57,11 +57,13 @@ struct HotkeyConfiguration: Equatable, Sendable {
     var quick: HotkeyBinding
     var long: HotkeyBinding
     var quickTriggerMode: QuickNoteTriggerMode
+    var quickHoldDelayMilliseconds: Int
 
     static let standard = HotkeyConfiguration(
         quick: .option,
         long: .commandOption,
-        quickTriggerMode: .hold
+        quickTriggerMode: .hold,
+        quickHoldDelayMilliseconds: QuickNoteHoldDelay.defaultMilliseconds
     )
 }
 
@@ -89,6 +91,7 @@ final class SetupModel: ObservableObject {
     @Published var hotkeyConfiguration = HotkeyConfiguration.standard
     @Published var hotkeyError: String?
     @Published var quickNoteTriggerMode: QuickNoteTriggerMode = .hold
+    @Published var quickNoteHoldDelayMilliseconds = QuickNoteHoldDelay.defaultMilliseconds
 
     var requestMicrophone: () -> Void = {}
     var chooseMicrophone: (String) -> Void = { _ in }
@@ -102,6 +105,7 @@ final class SetupModel: ObservableObject {
     var setCircleMinimumAngle: (Double) -> Void = { _ in }
     var setHotkeyConfiguration: (HotkeyConfiguration) -> Void = { _ in }
     var setQuickNoteTriggerMode: (QuickNoteTriggerMode) -> Void = { _ in }
+    var setQuickNoteHoldDelay: (Int) -> Void = { _ in }
     var refresh: () -> Void = {}
     var complete: () -> Void = {}
 
@@ -257,7 +261,11 @@ struct SetupView: View {
                 .buttonStyle(.bordered)
             }
             HStack(spacing: 28) {
-                ShortcutGuide(keys: model.hotkeyConfiguration.quick.label, title: "Quick note", detail: model.quickNoteTriggerMode.detail)
+                ShortcutGuide(
+                    keys: model.hotkeyConfiguration.quick.label,
+                    title: "Quick note",
+                    detail: model.quickNoteTriggerMode.detail(holdDelayMilliseconds: model.quickNoteHoldDelayMilliseconds)
+                )
                 ShortcutGuide(keys: model.hotkeyConfiguration.long.label, title: "Long explanation", detail: "Press once to start, again to finish.")
             }
         }
@@ -378,7 +386,7 @@ struct SetupView: View {
                 .fixedSize(horizontal: false, vertical: true)
             HotkeyRecordingRow(
                 title: "Quick note",
-                detail: model.quickNoteTriggerMode.detail,
+                detail: model.quickNoteTriggerMode.detail(holdDelayMilliseconds: model.quickNoteHoldDelayMilliseconds),
                 binding: Binding(
                     get: { model.hotkeyConfiguration.quick },
                     set: { value in updateHotkeys(quick: value) }
@@ -401,10 +409,54 @@ struct SetupView: View {
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
-                    Text("Double-tap avoids holding Option while you use Option-based shortcuts in other apps.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if model.quickNoteTriggerMode == .hold {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("Hold delay")
+                                    .fontWeight(.medium)
+                                Spacer()
+                                Text("\(model.quickNoteHoldDelayMilliseconds) ms")
+                                    .font(.system(.body, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text("How long you must hold the shortcut before recording starts. Increase this if Option-based shortcuts trigger dictation too easily.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            HStack(spacing: 12) {
+                                Text("\(QuickNoteHoldDelay.minimumMilliseconds) ms")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Slider(
+                                    value: Binding(
+                                        get: { Double(model.quickNoteHoldDelayMilliseconds) },
+                                        set: {
+                                            let milliseconds = QuickNoteHoldDelay.clamp(Int($0.rounded()))
+                                            model.quickNoteHoldDelayMilliseconds = milliseconds
+                                            model.setQuickNoteHoldDelay(milliseconds)
+                                        }
+                                    ),
+                                    in: Double(QuickNoteHoldDelay.minimumMilliseconds)...Double(QuickNoteHoldDelay.maximumMilliseconds),
+                                    step: 10
+                                )
+                                Text("\(QuickNoteHoldDelay.maximumMilliseconds) ms")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .accessibilityElement(children: .contain)
+                            .accessibilityLabel("Quick note hold delay")
+                            Button("Use \(QuickNoteHoldDelay.defaultMilliseconds) ms default") {
+                                model.quickNoteHoldDelayMilliseconds = QuickNoteHoldDelay.defaultMilliseconds
+                                model.setQuickNoteHoldDelay(QuickNoteHoldDelay.defaultMilliseconds)
+                            }
+                            .buttonStyle(.link)
+                        }
+                    } else {
+                        Text("Double-tap avoids holding Option while you use Option-based shortcuts in other apps.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             HotkeyRecordingRow(
@@ -431,6 +483,7 @@ struct SetupView: View {
                 model.hotkeyError = nil
                 model.hotkeyConfiguration = defaults
                 model.quickNoteTriggerMode = defaults.quickTriggerMode
+                model.quickNoteHoldDelayMilliseconds = defaults.quickHoldDelayMilliseconds
                 model.setHotkeyConfiguration(defaults)
                 model.setQuickNoteTriggerMode(defaults.quickTriggerMode)
             }
@@ -463,6 +516,7 @@ struct SetupView: View {
         if let quick { configuration.quick = quick }
         if let long { configuration.long = long }
         configuration.quickTriggerMode = model.quickNoteTriggerMode
+        configuration.quickHoldDelayMilliseconds = model.quickNoteHoldDelayMilliseconds
         guard configuration.quick != configuration.long else {
             model.hotkeyError = "Quick note and long explanation need different shortcuts."
             return
