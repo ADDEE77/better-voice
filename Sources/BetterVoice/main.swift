@@ -288,6 +288,10 @@ private final class LocalTranscriber {
         )
     }
 
+    var canChangeLanguage: Bool {
+        state != .loading && !isDownloading
+    }
+
     func loadCachedModel() async {
         guard isDownloaded else {
             setState(.missing)
@@ -312,7 +316,7 @@ private final class LocalTranscriber {
     /// cached replacement loaded when it is already on disk. Nothing downloads
     /// behind the user's back; the setup row asks first.
     func setTranscriptionLanguage(_ language: TranscriptionLanguage) async {
-        guard language != transcriptionLanguage else { return }
+        guard language != transcriptionLanguage, canChangeLanguage else { return }
         UserDefaults.standard.set(language.code, forKey: Self.transcriptionLanguageKey)
         manager = nil
         await loadCachedModel()
@@ -1542,10 +1546,13 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             self?.transcriber.setGrammarCorrectionEnabled(enabled)
         }
         model.setTranscriptionLanguage = { [weak self] language in
+            guard let self, self.state == .idle, self.transcriber.canChangeLanguage else { return }
             Task { @MainActor in
-                await self?.transcriber.setTranscriptionLanguage(language)
-                self?.refreshLanguageMenu()
-                self?.refreshModelMenu()
+                guard self.state == .idle, self.transcriber.canChangeLanguage else { return }
+                await self.transcriber.setTranscriptionLanguage(language)
+                self.refreshLanguageMenu()
+                self.refreshModelMenu()
+                self.refreshSetupModel()
             }
         }
         model.setDeveloperCleanup = { [weak self] enabled in
@@ -1741,7 +1748,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
     }
 
     private func refreshLanguageMenu() {
-        setupModel.languageSelectionEnabled = state == .idle
+        let enabled = state == .idle && transcriber.canChangeLanguage
+        setupModel.languageSelectionEnabled = enabled
         setupModel.transcriptionLanguage = transcriber.transcriptionLanguage
         guard let languageMenu else { return }
         languageMenu.removeAllItems()
@@ -1755,17 +1763,20 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             item.target = self
             item.representedObject = language.code
             item.state = language == selected ? .on : .off
-            item.isEnabled = state == .idle
+            item.isEnabled = enabled
             languageMenu.addItem(item)
         }
     }
 
     @objc private func selectTranscriptionLanguage(_ sender: NSMenuItem) {
+        guard state == .idle, transcriber.canChangeLanguage else { return }
         let language = TranscriptionLanguage(storedCode: sender.representedObject as? String)
         Task { @MainActor in
+            guard self.state == .idle else { return }
             await transcriber.setTranscriptionLanguage(language)
             refreshLanguageMenu()
             refreshModelMenu()
+            refreshSetupModel()
         }
     }
 
@@ -1850,6 +1861,8 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         microphones.refresh()
         setupModel.microphoneName = microphones.selectedLabel
         setupModel.microphoneSelectionEnabled = state == .idle
+        setupModel.transcriptionLanguage = transcriber.transcriptionLanguage
+        setupModel.languageSelectionEnabled = state == .idle && transcriber.canChangeLanguage
         setupModel.selectedMicrophoneID = microphones.selectedUID ?? "automatic"
         setupModel.microphoneOptions = [
             SetupMicrophoneOption(
@@ -2086,6 +2099,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
             RunLoop.main.add(timer, forMode: .common)
             refreshMicrophoneMenu()
             refreshModelMenu()
+            refreshLanguageMenu()
             trailOverlay.start()
             recordingHUD.show(microphone: selectedMicrophone.name)
             setStatusIcon(.recording)
@@ -2119,7 +2133,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         refreshMicrophoneMenu()
         trailOverlay.stop()
         recordingHUD.showFinishing()
-        if transcriber.grammarCorrectionEnabled {
+        if transcriber.grammarCorrectionEnabled, transcriber.transcriptionLanguage.allowsGrammarCorrection {
             recordingHUD.showFinishingStatus("Polishing transcript locally…")
         }
         setStatusIcon(.finishing)
@@ -2311,6 +2325,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSMenuDelega
         recordingHUD.hide()
         refreshMicrophoneMenu()
         refreshModelMenu()
+        refreshLanguageMenu()
         setStatusIcon(.idle)
         updateMenuTitle("Start long recording (⌘⌥)", enabled: true)
     }
