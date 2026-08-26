@@ -1382,6 +1382,8 @@ private final class InputMonitor {
     private var quickDoubleTapDetector = ModifierDoubleTapDetector()
     private var quickToggleTapDetector = ModifierToggleTapDetector()
     private var longDoubleTapDetector = ModifierDoubleTapDetector()
+    private var quickChordEngagement = ModifierChordEngagement()
+    private var longChordEngagement = ModifierChordEngagement()
     private let startPushToTalk: () -> Bool
     private let stopPushToTalk: () -> Void
     private let toggleLongForm: () -> Void
@@ -1417,6 +1419,8 @@ private final class InputMonitor {
         quickDoubleTapDetector.reset()
         quickToggleTapDetector.reset()
         longDoubleTapDetector.reset()
+        quickChordEngagement.reset()
+        longChordEngagement.reset()
     }
 
     func refreshKeyboardMonitoring() {
@@ -1504,29 +1508,33 @@ private final class InputMonitor {
                 shift: normalized.contains(.shift)
             )
             let active = modifierState.active
-            let effectiveActive = active || modifierState.partial
+            let engaged = active || modifierState.partial
             switch hotkeyConfiguration.quickTriggerMode {
             case .hold:
-                if effectiveActive != modifierQuickActive {
-                    modifierQuickActive = effectiveActive
-                    effectiveActive ? beginQuickShortcut() : endQuickShortcut()
+                if engaged != modifierQuickActive {
+                    modifierQuickActive = engaged
+                    engaged ? beginQuickShortcut() : endQuickShortcut()
                 }
             case .doubleTap:
-                if !effectiveActive, !normalized.isEmpty {
+                let detectorActive = quickChordEngagement.isPressed(modifierState)
+                if !engaged, !normalized.isEmpty {
                     quickDoubleTapDetector.reset()
+                    quickChordEngagement.reset()
                     modifierQuickActive = false
-                } else if quickDoubleTapDetector.modifierChanged(active: effectiveActive, now: now) {
+                } else if quickDoubleTapDetector.modifierChanged(active: detectorActive, now: now) {
                     toggleQuickNoteRecording()
                 }
-                modifierQuickActive = effectiveActive
+                modifierQuickActive = engaged
             case .toggle:
-                if !effectiveActive, !normalized.isEmpty {
+                let detectorActive = quickChordEngagement.isPressed(modifierState)
+                if !engaged, !normalized.isEmpty {
                     quickToggleTapDetector.reset()
+                    quickChordEngagement.reset()
                     modifierQuickActive = false
-                } else if quickToggleTapDetector.modifierChanged(active: effectiveActive, now: now) {
+                } else if quickToggleTapDetector.modifierChanged(active: detectorActive, now: now) {
                     toggleQuickNoteRecording()
                 }
-                modifierQuickActive = effectiveActive
+                modifierQuickActive = engaged
             }
         }
 
@@ -1543,17 +1551,19 @@ private final class InputMonitor {
                 shift: normalized.contains(.shift)
             )
             let active = modifierState.active
-            let effectiveActive = active || modifierState.partial
+            let engaged = active || modifierState.partial
             switch hotkeyConfiguration.longTriggerMode {
             case .toggle:
                 if active, !modifierLongActive {
                     triggerLongShortcut()
                 }
             case .doubleTap:
-                if !effectiveActive, !normalized.isEmpty {
+                let detectorActive = longChordEngagement.isPressed(modifierState)
+                if !engaged, !normalized.isEmpty {
                     longDoubleTapDetector.reset()
+                    longChordEngagement.reset()
                     modifierLongActive = false
-                } else if longDoubleTapDetector.modifierChanged(active: effectiveActive, now: now) {
+                } else if longDoubleTapDetector.modifierChanged(active: detectorActive, now: now) {
                     triggerLongShortcut()
                 }
             case .hold:
@@ -1692,6 +1702,8 @@ private final class InputMonitor {
         quickDoubleTapDetector.reset()
         quickToggleTapDetector.reset()
         longDoubleTapDetector.reset()
+        quickChordEngagement.reset()
+        longChordEngagement.reset()
     }
 
     private func sampleMouse() {
