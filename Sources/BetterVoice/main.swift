@@ -1493,7 +1493,14 @@ private final class InputMonitor {
 
     private func handleFlags(_ event: NSEvent) {
         let flags = event.modifierFlags
-        let normalized = flags.intersection(.deviceIndependentFlagsMask)
+        let recordingModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+        let normalized = flags.intersection(recordingModifiers)
+        let leftover = RecordingModifierSnapshot(
+            command: normalized.contains(.command),
+            option: normalized.contains(.option),
+            control: normalized.contains(.control),
+            shift: normalized.contains(.shift)
+        )
         let now = Date().timeIntervalSinceReferenceDate
         let quick = hotkeyConfiguration.quick
         if quick.keyCode == nil, eventChangesModifier(event, for: quick) {
@@ -1517,7 +1524,7 @@ private final class InputMonitor {
                 }
             case .doubleTap:
                 let detectorActive = quickChordEngagement.isPressed(modifierState)
-                if !engaged, !normalized.isEmpty {
+                if shouldCancelModifierTap(bindingEngaged: engaged, leftover: leftover) {
                     quickDoubleTapDetector.reset()
                     quickChordEngagement.reset()
                     modifierQuickActive = false
@@ -1527,7 +1534,7 @@ private final class InputMonitor {
                 modifierQuickActive = engaged
             case .toggle:
                 let detectorActive = quickChordEngagement.isPressed(modifierState)
-                if !engaged, !normalized.isEmpty {
+                if shouldCancelModifierTap(bindingEngaged: engaged, leftover: leftover) {
                     quickToggleTapDetector.reset()
                     quickChordEngagement.reset()
                     modifierQuickActive = false
@@ -1559,7 +1566,7 @@ private final class InputMonitor {
                 }
             case .doubleTap:
                 let detectorActive = longChordEngagement.isPressed(modifierState)
-                if !engaged, !normalized.isEmpty {
+                if shouldCancelModifierTap(bindingEngaged: engaged, leftover: leftover) {
                     longDoubleTapDetector.reset()
                     longChordEngagement.reset()
                     modifierLongActive = false

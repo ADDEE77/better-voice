@@ -123,6 +123,35 @@ public struct ModifierChordEngagement: Sendable {
     }
 }
 
+/// Command, Option, Control, and Shift are the only flags that form a
+/// recording shortcut. Caps Lock, Fn, Help, and numeric pad are also
+/// device-independent on macOS, but leftover bits of those must not look
+/// like a cancelled tap.
+public struct RecordingModifierSnapshot: Equatable, Sendable {
+    public let command: Bool
+    public let option: Bool
+    public let control: Bool
+    public let shift: Bool
+
+    public init(command: Bool, option: Bool, control: Bool, shift: Bool) {
+        self.command = command
+        self.option = option
+        self.control = control
+        self.shift = shift
+    }
+
+    public var isEmpty: Bool {
+        !command && !option && !control && !shift
+    }
+}
+
+public func shouldCancelModifierTap(
+    bindingEngaged: Bool,
+    leftover: RecordingModifierSnapshot
+) -> Bool {
+    !bindingEngaged && !leftover.isEmpty
+}
+
 /// Detects a double-tap on a lone modifier key without treating holds or
 /// modifier+key combos as taps.
 public struct ModifierDoubleTapDetector: Sendable {
