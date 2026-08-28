@@ -182,3 +182,45 @@ final class RecordingTriggerModeTests: XCTestCase {
         )
     }
 }
+
+final class ModifierTapCancellationTests: XCTestCase {
+    private let none = RecordingModifierSnapshot(
+        command: false, option: false, control: false, shift: false
+    )
+    private let commandOnly = RecordingModifierSnapshot(
+        command: true, option: false, control: false, shift: false
+    )
+
+    func testCapsLockOrFnAloneDoNotCancelATap() {
+        // InputMonitor only forwards Command/Option/Control/Shift. Caps Lock,
+        // Fn, Help, and numeric pad therefore appear here as an empty leftover.
+        XCTAssertFalse(shouldCancelModifierTap(bindingEngaged: false, leftover: none))
+    }
+
+    func testUnboundCommandCancelsAnOptionTap() {
+        XCTAssertTrue(shouldCancelModifierTap(bindingEngaged: false, leftover: commandOnly))
+    }
+
+    func testLeftoverModifiersDoNotCancelWhileTheBindingIsStillDown() {
+        let commandAndOption = RecordingModifierSnapshot(
+            command: true, option: true, control: false, shift: false
+        )
+        XCTAssertFalse(shouldCancelModifierTap(bindingEngaged: true, leftover: commandAndOption))
+    }
+
+    func testOptionDoubleTapStillArmsWhenOnlyNonChordFlagsWouldRemain() {
+        var detector = ModifierDoubleTapDetector()
+        XCTAssertFalse(detector.modifierChanged(active: true, now: 0))
+        XCTAssertFalse(shouldCancelModifierTap(bindingEngaged: false, leftover: none))
+        XCTAssertFalse(detector.modifierChanged(active: false, now: 0.1))
+        XCTAssertTrue(detector.modifierChanged(active: true, now: 0.2))
+    }
+
+    func testOptionDoubleTapResetsWhenAnUnboundModifierRemains() {
+        var detector = ModifierDoubleTapDetector()
+        XCTAssertFalse(detector.modifierChanged(active: true, now: 0))
+        XCTAssertTrue(shouldCancelModifierTap(bindingEngaged: false, leftover: commandOnly))
+        detector.reset()
+        XCTAssertFalse(detector.modifierChanged(active: true, now: 0.2))
+    }
+}

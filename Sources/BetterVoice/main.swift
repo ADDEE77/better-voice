@@ -1489,7 +1489,14 @@ private final class InputMonitor {
 
     private func handleFlags(_ event: NSEvent) {
         let flags = event.modifierFlags
-        let normalized = flags.intersection(.deviceIndependentFlagsMask)
+        let recordingModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+        let normalized = flags.intersection(recordingModifiers)
+        let leftover = RecordingModifierSnapshot(
+            command: normalized.contains(.command),
+            option: normalized.contains(.option),
+            control: normalized.contains(.control),
+            shift: normalized.contains(.shift)
+        )
         let now = Date().timeIntervalSinceReferenceDate
         let quick = hotkeyConfiguration.quick
         if quick.keyCode == nil, eventChangesModifier(event, for: quick) {
@@ -1512,7 +1519,7 @@ private final class InputMonitor {
                     effectiveActive ? beginQuickShortcut() : endQuickShortcut()
                 }
             case .doubleTap:
-                if !effectiveActive, !normalized.isEmpty {
+                if shouldCancelModifierTap(bindingEngaged: effectiveActive, leftover: leftover) {
                     quickDoubleTapDetector.reset()
                     modifierQuickActive = false
                 } else if quickDoubleTapDetector.modifierChanged(active: effectiveActive, now: now) {
@@ -1520,7 +1527,7 @@ private final class InputMonitor {
                 }
                 modifierQuickActive = effectiveActive
             case .toggle:
-                if !effectiveActive, !normalized.isEmpty {
+                if shouldCancelModifierTap(bindingEngaged: effectiveActive, leftover: leftover) {
                     quickToggleTapDetector.reset()
                     modifierQuickActive = false
                 } else if quickToggleTapDetector.modifierChanged(active: effectiveActive, now: now) {
@@ -1550,7 +1557,7 @@ private final class InputMonitor {
                     triggerLongShortcut()
                 }
             case .doubleTap:
-                if !effectiveActive, !normalized.isEmpty {
+                if shouldCancelModifierTap(bindingEngaged: effectiveActive, leftover: leftover) {
                     longDoubleTapDetector.reset()
                     modifierLongActive = false
                 } else if longDoubleTapDetector.modifierChanged(active: effectiveActive, now: now) {
