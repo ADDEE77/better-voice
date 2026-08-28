@@ -183,6 +183,124 @@ final class RecordingTriggerModeTests: XCTestCase {
     }
 }
 
+final class ModifierChordEngagementTests: XCTestCase {
+    private func commandOption(
+        command: Bool,
+        option: Bool,
+        control: Bool = false,
+        shift: Bool = false
+    ) -> ModifierBindingState {
+        ModifierBindingState(
+            bindingCommand: true,
+            bindingOption: true,
+            bindingControl: false,
+            bindingShift: false,
+            command: command,
+            option: option,
+            control: control,
+            shift: shift
+        )
+    }
+
+    func testSingleKeyOfAChordDoesNotCountAsPressed() {
+        var engagement = ModifierChordEngagement()
+        XCTAssertFalse(engagement.isPressed(commandOption(command: true, option: false)))
+        XCTAssertFalse(engagement.isPressed(commandOption(command: false, option: false)))
+        XCTAssertFalse(engagement.isPressed(commandOption(command: false, option: true)))
+    }
+
+    func testFullChordThenSequentialReleaseStaysPressedUntilIdle() {
+        var engagement = ModifierChordEngagement()
+        XCTAssertFalse(engagement.isPressed(commandOption(command: true, option: false)))
+        XCTAssertTrue(engagement.isPressed(commandOption(command: true, option: true)))
+        XCTAssertTrue(engagement.isPressed(commandOption(command: true, option: false)))
+        XCTAssertFalse(engagement.isPressed(commandOption(command: false, option: false)))
+    }
+
+    func testCommandOnlyDoubleTapDoesNotToggleACommandOptionShortcut() {
+        var engagement = ModifierChordEngagement()
+        var detector = ModifierDoubleTapDetector()
+
+        XCTAssertFalse(detector.modifierChanged(
+            active: engagement.isPressed(commandOption(command: true, option: false)),
+            now: 0
+        ))
+        XCTAssertFalse(detector.modifierChanged(
+            active: engagement.isPressed(commandOption(command: false, option: false)),
+            now: 0.1
+        ))
+        XCTAssertFalse(detector.modifierChanged(
+            active: engagement.isPressed(commandOption(command: true, option: false)),
+            now: 0.2
+        ))
+    }
+
+    func testFullChordDoubleTapStillFiresWhenKeysReleaseOneAtATime() {
+        var engagement = ModifierChordEngagement()
+        var detector = ModifierDoubleTapDetector()
+
+        XCTAssertFalse(detector.modifierChanged(
+            active: engagement.isPressed(commandOption(command: true, option: false)),
+            now: 0
+        ))
+        XCTAssertFalse(detector.modifierChanged(
+            active: engagement.isPressed(commandOption(command: true, option: true)),
+            now: 0.02
+        ))
+        XCTAssertFalse(detector.modifierChanged(
+            active: engagement.isPressed(commandOption(command: true, option: false)),
+            now: 0.08
+        ))
+        XCTAssertFalse(detector.modifierChanged(
+            active: engagement.isPressed(commandOption(command: false, option: false)),
+            now: 0.12
+        ))
+        XCTAssertFalse(detector.modifierChanged(
+            active: engagement.isPressed(commandOption(command: true, option: false)),
+            now: 0.20
+        ))
+        XCTAssertTrue(detector.modifierChanged(
+            active: engagement.isPressed(commandOption(command: true, option: true)),
+            now: 0.24
+        ))
+    }
+
+    func testOptionOnlyToggleStillFiresOnAShortTap() {
+        var engagement = ModifierChordEngagement()
+        var detector = ModifierToggleTapDetector()
+        let optionDown = ModifierBindingState(
+            bindingCommand: false,
+            bindingOption: true,
+            bindingControl: false,
+            bindingShift: false,
+            command: false,
+            option: true,
+            control: false,
+            shift: false
+        )
+        let idle = ModifierBindingState(
+            bindingCommand: false,
+            bindingOption: true,
+            bindingControl: false,
+            bindingShift: false,
+            command: false,
+            option: false,
+            control: false,
+            shift: false
+        )
+
+        XCTAssertFalse(detector.modifierChanged(active: engagement.isPressed(optionDown), now: 0))
+        XCTAssertTrue(detector.modifierChanged(active: engagement.isPressed(idle), now: 0.1))
+    }
+
+    func testResetClearsALatchedFullChord() {
+        var engagement = ModifierChordEngagement()
+        XCTAssertTrue(engagement.isPressed(commandOption(command: true, option: true)))
+        engagement.reset()
+        XCTAssertFalse(engagement.isPressed(commandOption(command: true, option: false)))
+    }
+}
+
 final class ModifierTapCancellationTests: XCTestCase {
     private let none = RecordingModifierSnapshot(
         command: false, option: false, control: false, shift: false

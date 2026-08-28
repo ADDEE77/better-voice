@@ -99,6 +99,30 @@ public struct ModifierBindingState: Equatable, Sendable {
     }
 }
 
+/// Tracks whether a multi-modifier chord reached its exact binding during
+/// the current press. Tap and double-tap must not treat a single key of ⌘⌥
+/// as the shortcut; after the full chord is down, keys may come up one at
+/// a time without looking like a cancelled tap.
+public struct ModifierChordEngagement: Sendable {
+    private var reachedFullChord = false
+
+    public init() {}
+
+    public mutating func reset() {
+        reachedFullChord = false
+    }
+
+    /// Whether a tap or double-tap detector should treat the binding as down.
+    public mutating func isPressed(_ state: ModifierBindingState) -> Bool {
+        if state.active {
+            reachedFullChord = true
+        } else if !state.partial {
+            reachedFullChord = false
+        }
+        return reachedFullChord && (state.active || state.partial)
+    }
+}
+
 /// Command, Option, Control, and Shift are the only flags that form a
 /// recording shortcut. Caps Lock, Fn, Help, and numeric pad are also
 /// device-independent on macOS, but leftover bits of those must not look
